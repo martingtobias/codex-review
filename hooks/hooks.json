@@ -1,0 +1,28 @@
+{
+  "description": "Post-commit code review hook using OpenAI Codex CLI",
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/post-commit-review.sh",
+            "timeout": 300
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/scripts/stop-review-loop.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

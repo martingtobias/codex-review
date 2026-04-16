@@ -1,0 +1,15 @@
+{
+  "name": "codex-review",
+  "owner": {
+    "name": "Andrei",
+    "email": "andrei.david@gmail.com"
+  },
+  "plugins": [
+    {
+      "name": "codex-review",
+      "source": ".",
+      "description": "Automatic post-commit code review using OpenAI Codex CLI.",
+      "version": "1.0.0"
+    }
+  ]
+}

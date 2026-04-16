@@ -268,8 +268,11 @@ fi
 
 REVIEW_PROSE=""
 if [ "$JSONL_MODE" = "true" ]; then
+  # Codex can emit several agent_message items (streaming partials + final).
+  # Take the LAST one -- that's the final summary. Concatenating all of
+  # them duplicates the review text in the prose surfaced back to Claude.
   REVIEW_PROSE=$(printf '%s\n' "$REVIEW_JSONL" \
-    | jq -r 'select(.type=="item.completed" and .item.type=="agent_message") | .item.text' \
+    | jq -sr '[.[] | select(.type=="item.completed" and .item.type=="agent_message") | .item.text] | last // ""' \
     2>/dev/null || true)
   if [ -z "$REVIEW_PROSE" ]; then
     REVIEW_PROSE="(Codex produced no agent_message; stderr: ${REVIEW_STDERR:-<empty>})"

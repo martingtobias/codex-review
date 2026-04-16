@@ -178,40 +178,73 @@ trap '
   fi
 ' EXIT
 
-# --- Run Codex review ---
+# --- Run Codex review (JSONL event stream via --json) ---
+# Observed event schema (Codex CLI ~2026-04):
+#   thread.started / turn.started / turn.completed   -- lifecycle
+#   item.started / item.completed                    -- wraps each item
+# Item subtypes (.item.type):
+#   command_execution    -- tool calls the agent ran while investigating
+#   todo_list            -- progress tracking
+#   agent_message        -- the final review prose; .item.text carries it
+# We parse ONLY the agent_message(s), which isolates the final verdict
+# from tool-call noise and Codex's own priority-rubric preamble -- the
+# class of false positives that the earlier text parser produced.
+START_TS=$(date +%s)
 REVIEW_EXIT=0
-REVIEW_OUTPUT=$(cd "$REPO_ROOT" && "$CODEX_BIN" exec review \
+REVIEW_JSONL=$(cd "$REPO_ROOT" && "$CODEX_BIN" exec review --json \
   --commit "$HEAD_SHA" \
   --full-auto \
   2>&1) || REVIEW_EXIT=$?
 
-# --- Strip ANSI colour codes, then extract the summary section ---
-ESC=$(printf '\033')
-ANSI_STRIPPED=$(printf '%s\n' "$REVIEW_OUTPUT" | sed "s/${ESC}\\[[0-9;]*m//g")
-REVIEW_SUMMARY=$(printf '%s\n' "$ANSI_STRIPPED" | sed -n '/^codex$/,$p')
-if [ -z "$REVIEW_SUMMARY" ]; then
-  REVIEW_SUMMARY="$ANSI_STRIPPED"
+# Detect JSONL mode; older Codex CLIs may emit plain text even with --json.
+JSONL_MODE=false
+if printf '%s\n' "$REVIEW_JSONL" | head -1 | jq -e 'has("type")' >/dev/null 2>&1; then
+  JSONL_MODE=true
 fi
 
-# Finding detection: real findings appear in the summary section as lines that
-# START with [P1]/[P2] (optionally after a list marker/quote), followed by
-# whitespace and non-'=' content. This rejects in-paragraph mentions and the
-# rubric legend (e.g., "[P1] = must-fix"). Only evaluated on exit-0 output.
-# Run detection on the FULL summary before any truncation, so late findings
-# aren't silently dropped.
+REVIEW_PROSE=""
+if [ "$JSONL_MODE" = "true" ]; then
+  REVIEW_PROSE=$(printf '%s\n' "$REVIEW_JSONL" \
+    | jq -r 'select(.type=="item.completed" and .item.type=="agent_message") | .item.text' \
+    2>/dev/null || true)
+  if [ -z "$REVIEW_PROSE" ]; then
+    REVIEW_PROSE="(Codex produced no agent_message; see Codex logs for details.)"
+  fi
+else
+  # Legacy text-parser fallback: strip ANSI, take everything from the 'codex'
+  # marker onwards. Will be removed in a future release.
+  ESC=$(printf '\033')
+  ANSI_STRIPPED=$(printf '%s\n' "$REVIEW_JSONL" | sed "s/${ESC}\\[[0-9;]*m//g")
+  REVIEW_PROSE=$(printf '%s\n' "$ANSI_STRIPPED" | sed -n '/^codex$/,$p')
+  if [ -z "$REVIEW_PROSE" ]; then
+    REVIEW_PROSE="$ANSI_STRIPPED"
+  fi
+fi
+
+# Finding detection on the clean review prose. Line-anchored pattern rejects
+# prose mentions and rubric legend entries.
 HAS_ISSUES=false
 if [ "$REVIEW_EXIT" -eq 0 ]; then
-  if printf '%s\n' "$REVIEW_SUMMARY" \
+  if printf '%s\n' "$REVIEW_PROSE" \
       | grep -qE '^[[:space:]]*([-*>][[:space:]]+)?\[P[12]\][[:space:]]+[^=[:space:]]'; then
     HAS_ISSUES=true
   fi
 fi
 
-# Truncate for display only (AFTER detection). When Codex found [P1]/[P2]
-# issues, keep the TAIL of the summary -- Codex places findings at the end,
-# so head-truncation would hide the very issues we're blocking on. For
-# error and clean-pass cases, keep the HEAD -- error messages and pass-
-# summaries are front-loaded.
+# Extract structured findings (priority + verbatim title-line) for the history
+# log. Title retains the " — file:line" suffix as emitted by Codex; callers
+# can parse further if they want. Missing-match lines are filtered by grep.
+FINDINGS_JSON=$(printf '%s\n' "$REVIEW_PROSE" \
+  | grep -E '^[[:space:]]*-?[[:space:]]*\[P[123]\][[:space:]]+' \
+  | jq -Rn '[inputs | capture("^[[:space:]]*-?[[:space:]]*\\[(?<priority>P[123])\\][[:space:]]+(?<title>.*)$")]' \
+  2>/dev/null || true)
+if ! printf '%s' "$FINDINGS_JSON" | jq -e . >/dev/null 2>&1; then
+  FINDINGS_JSON="[]"
+fi
+
+# Display text for Claude: the prose itself, tail-preserving truncation when
+# we're blocking on findings (Codex puts its list at the end).
+REVIEW_SUMMARY="$REVIEW_PROSE"
 if [ ${#REVIEW_SUMMARY} -gt "$CODEX_REVIEW_MAX_OUTPUT" ]; then
   if [ "$HAS_ISSUES" = "true" ]; then
     REVIEW_SUMMARY="... [truncated head]"$'\n'"${REVIEW_SUMMARY: -$CODEX_REVIEW_MAX_OUTPUT}"
@@ -220,9 +253,48 @@ if [ ${#REVIEW_SUMMARY} -gt "$CODEX_REVIEW_MAX_OUTPUT" ]; then
   fi
 fi
 
+# --- Append one line to the per-repo history log ---
+# Never blocks or fails the hook; errors are swallowed. Lives in .git/ so
+# it is never accidentally committed and is automatically scoped per-repo.
+append_history() {
+  local verdict="$1"
+  local prose_log
+  if [ ${#REVIEW_PROSE} -gt 2000 ]; then
+    prose_log="${REVIEW_PROSE:0:2000}... [truncated]"
+  else
+    prose_log="$REVIEW_PROSE"
+  fi
+  local duration=$(( $(date +%s) - START_TS ))
+  jq -nc \
+    --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    --arg sha "$HEAD_SHA" \
+    --arg short "$SHORT_SHA" \
+    --arg branch "$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || true)" \
+    --arg author_name "$(git -C "$REPO_ROOT" log -1 --format=%an "$HEAD_SHA" 2>/dev/null || true)" \
+    --arg author_email "$(git -C "$REPO_ROOT" log -1 --format=%ae "$HEAD_SHA" 2>/dev/null || true)" \
+    --arg verdict "$verdict" \
+    --argjson findings "$FINDINGS_JSON" \
+    --arg prose "$prose_log" \
+    --arg codex_exit "$REVIEW_EXIT" \
+    --arg duration "$duration" \
+    --arg ver "1.2.0" \
+    '{timestamp:$ts, sha:$sha, short_sha:$short, branch:$branch,
+      author_name:$author_name, author_email:$author_email,
+      verdict:$verdict,
+      finding_count:($findings|length),
+      blocking_count:([$findings[] | select(.priority=="P1" or .priority=="P2")] | length),
+      findings:$findings,
+      review_prose:$prose,
+      codex_exit:($codex_exit|tonumber),
+      duration_seconds:($duration|tonumber),
+      plugin_version:$ver}' \
+    >> "$REPO_ROOT/.git/codex-reviews.jsonl" 2>/dev/null || true
+}
+
 # --- Emit verdict ---
 if [ "$REVIEW_EXIT" -ne 0 ]; then
   echo "ERROR" > "$STATE_FILE"
+  append_history "ERROR"
   jq -n \
     --arg sha "$SHORT_SHA" \
     --arg review "$REVIEW_SUMMARY" \
@@ -230,12 +302,14 @@ if [ "$REVIEW_EXIT" -ne 0 ]; then
     '{"decision": "block", "reason": ("Codex review of commit " + $sha + " errored (exit code: " + $exit_code + ").\n\n" + $review + "\n\nReview the output above and decide whether to push or fix issues.")}'
 elif [ "$HAS_ISSUES" = "true" ]; then
   echo "FAIL" > "$STATE_FILE"
+  append_history "FAIL"
   jq -n \
     --arg sha "$SHORT_SHA" \
     --arg review "$REVIEW_SUMMARY" \
     '{"decision": "block", "reason": ("Codex review of commit " + $sha + " found issues:\n\n" + $review + "\n\nFix the issues identified above, then create a new commit. Do NOT re-run the codex review yourself -- this hook will trigger it automatically on your next commit. Do NOT push to GitHub until the review passes.")}'
 else
   rm -f "$STATE_FILE" "$LOOP_COUNTER"
+  append_history "PASS"
   jq -n \
     --arg sha "$SHORT_SHA" \
     --arg review "$REVIEW_SUMMARY" \

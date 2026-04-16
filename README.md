@@ -82,6 +82,37 @@ Add them to the `.gitignore` of any project you use the plugin in:
 .codex-review-loop-count
 ```
 
+## Review history
+
+Every review (pass or fail) appends one JSON line to `.git/codex-reviews.jsonl` in the repo where the commit was made. The file lives inside `.git/` so it is never committed and is scoped per-repo.
+
+Each entry contains:
+
+- `timestamp` (ISO-8601 UTC), `sha` / `short_sha`, `branch`, `author_name`, `author_email`
+- `verdict` — `PASS` / `FAIL` / `ERROR` / `TIMEOUT`
+- `findings[]` — structured `{priority, title}` per `[P1]`/`[P2]`/`[P3]` line Codex reported, `finding_count`, `blocking_count`
+- `review_prose` — the full Codex review text (truncated to 2000 chars)
+- `codex_exit`, `duration_seconds`, `plugin_version`
+
+Inspect with `jq`:
+
+```bash
+# Last 5 verdicts + finding counts in the current repo
+tail -5 .git/codex-reviews.jsonl | jq -c '{short_sha, verdict, blocking_count}'
+
+# Find when a specific commit was reviewed
+jq -c 'select(.short_sha == "abc12345")' .git/codex-reviews.jsonl
+
+# All FAIL verdicts with their blocking titles
+jq 'select(.verdict == "FAIL") | {short_sha, titles: [.findings[].title]}' .git/codex-reviews.jsonl
+```
+
+To reset history, `rm .git/codex-reviews.jsonl`. Nothing in the plugin relies on this file — it's write-only from the hook's perspective.
+
+## Parser: structured JSONL
+
+Under the hood, the post-commit hook invokes `codex exec review --json` and parses the `agent_message` event from Codex's JSONL event stream. This replaces the earlier sed/grep text-scraping that produced false positives. If your Codex CLI is older and ignores `--json`, the hook falls back to the legacy text parser and still works — upgrade when convenient.
+
 ## Troubleshooting
 
 - **Stuck in a fix loop / Stop hook keeps blocking** — interrupt Claude (Ctrl-C), then `rm -f .codex-review-state .codex-review-loop-count` in the repo root. Or set `CODEX_REVIEW_SKIP=1` for the rest of the session.
@@ -89,6 +120,7 @@ Add them to the `.gitignore` of any project you use the plugin in:
 - **Codex not found** — `command -v codex` returns empty. Install with `npm install -g @openai/codex`, or set `CODEX_BIN=/path/to/codex`.
 - **Codex auth failure on review** — run `codex login` or export `OPENAI_API_KEY`.
 - **Review keeps failing on obviously clean commits** — file an issue with the verbatim Codex output. As a workaround, `rm .codex-review-state` and set `CODEX_REVIEW_SKIP=1`.
+- **Reset review history** — `rm .git/codex-reviews.jsonl` in the affected repo.
 
 ## Uninstall
 

@@ -269,11 +269,20 @@ fi
 REVIEW_PROSE=""
 if [ "$JSONL_MODE" = "true" ]; then
   # Codex can emit several agent_message items (streaming partials + final).
-  # Take the LAST one -- that's the final summary. Concatenating all of
+  # Take the LAST one -- that's the authoritative final summary. Concatenating
   # them duplicates the review text in the prose surfaced back to Claude.
-  REVIEW_PROSE=$(printf '%s\n' "$REVIEW_JSONL" \
-    | jq -sr '[.[] | select(.type=="item.completed" and .item.type=="agent_message") | .item.text] | last // ""' \
-    2>/dev/null || true)
+  #
+  # Use per-line `try fromjson catch empty` so a single malformed/trailing
+  # line in the stream doesn't abort parsing and mask earlier findings the
+  # way `jq -s` (slurp) would. Base64-encode each match so embedded newlines
+  # survive the `tail -n 1` that picks the last match.
+  LAST_ENCODED=$(printf '%s\n' "$REVIEW_JSONL" \
+    | jq -rR 'try (fromjson | select(.type=="item.completed" and .item.type=="agent_message") | .item.text | @base64) catch empty' \
+    2>/dev/null \
+    | tail -n 1)
+  if [ -n "$LAST_ENCODED" ]; then
+    REVIEW_PROSE=$(printf '%s' "$LAST_ENCODED" | base64 -d 2>/dev/null || true)
+  fi
   if [ -z "$REVIEW_PROSE" ]; then
     REVIEW_PROSE="(Codex produced no agent_message; stderr: ${REVIEW_STDERR:-<empty>})"
   fi

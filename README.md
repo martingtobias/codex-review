@@ -26,6 +26,18 @@ Pull updates later with:
 /reload-plugins
 ```
 
+### Migrating from a pre-rename install
+
+The marketplace was renamed from `codex-review` to `andreidavid` in an early iteration. Claude Code keys marketplaces by the name they were first added under, so if you installed before the rename your local ID is still `codex-review`, and the management commands above won't find it. Remove the old registration and re-add fresh:
+
+```text
+/plugin uninstall codex-review@codex-review
+/plugin marketplace remove codex-review
+/plugin marketplace add andreidavid/codex-review
+/plugin install codex-review@andreidavid
+/reload-plugins
+```
+
 ## What this plugin adds
 
 - **Slash command** `/codex-review` — on-demand review of a specific commit, uncommitted changes, or a branch diff. Arguments: `[--commit <sha>] [--uncommitted] [--base <branch>]`.

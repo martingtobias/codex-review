@@ -14,12 +14,16 @@ A Claude Code plugin that runs an automatic code review with OpenAI Codex CLI af
 ```text
 /plugin marketplace add andreidavid/codex-review
 /plugin install codex-review@codex-review
+/reload-plugins
 ```
+
+The `@codex-review` suffix looks like a typo but isn't: the left-hand side is the plugin's name, the right-hand side is the marketplace's name — and because this repo ships a single plugin, both happen to be `codex-review`. The `/reload-plugins` step is required after install; Claude Code won't pick up the hooks until you run it.
 
 Pull updates later with:
 
 ```text
 /plugin marketplace update codex-review
+/reload-plugins
 ```
 
 ## What this plugin adds
@@ -29,7 +33,9 @@ Pull updates later with:
 - **PostToolUse hook** — after every successful `git commit` made via the Bash tool, Codex reviews the new commit. `[P1]`/`[P2]` findings block Claude and instruct it to fix and re-commit.
 - **Stop hook** — keeps Claude iterating through the fix/re-commit cycle until the review passes, capped at `CODEX_REVIEW_MAX_LOOPS` iterations (default 5).
 
-> **Scope:** the PostToolUse hook is registered for every Bash tool call — a fast filter inside the script lets unrelated calls fall through in milliseconds, and only successful `git commit` commands escalate to running Codex.
+> **Scope:** only commits that Claude itself makes via the Bash tool trigger the review. Commits you run in your own terminal (outside a Claude Code session) are not reviewed — the hook has no visibility into them. Use the `/codex-review` slash command or the skill to review those on demand.
+>
+> The PostToolUse hook is registered for every Bash tool call; a fast filter inside the script lets unrelated calls fall through in milliseconds, and only successful `git commit` commands escalate to running Codex.
 
 ## Cost and latency
 

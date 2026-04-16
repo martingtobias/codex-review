@@ -13,16 +13,16 @@ A Claude Code plugin that runs an automatic code review with OpenAI Codex CLI af
 
 ```text
 /plugin marketplace add andreidavid/codex-review
-/plugin install codex-review@codex-review
+/plugin install codex-review@andreidavid
 /reload-plugins
 ```
 
-The `@codex-review` suffix looks like a typo but isn't: the left-hand side is the plugin's name, the right-hand side is the marketplace's name — and because this repo ships a single plugin, both happen to be `codex-review`. The `/reload-plugins` step is required after install; Claude Code won't pick up the hooks until you run it.
+The `@andreidavid` suffix is the marketplace name, not a typo: `codex-review@andreidavid` reads as "the `codex-review` plugin from the `andreidavid` marketplace". `/reload-plugins` is required after install — Claude Code won't pick up the hooks until you run it.
 
 Pull updates later with:
 
 ```text
-/plugin marketplace update codex-review
+/plugin marketplace update andreidavid
 /reload-plugins
 ```
 
@@ -54,7 +54,7 @@ Environment variables:
 | `CODEX_BIN` | `$(command -v codex)` | Override path to the Codex binary. |
 | `CODEX_REVIEW_MAX_OUTPUT` | `8000` | Max characters of review output surfaced back to Claude. |
 
-To disable the plugin for a whole session without uninstalling, use `/plugin disable codex-review@codex-review`.
+To disable the plugin for a whole session without uninstalling, use `/plugin disable codex-review@andreidavid`.
 
 ## State files
 
@@ -81,8 +81,8 @@ Add them to the `.gitignore` of any project you use the plugin in:
 ## Uninstall
 
 ```text
-/plugin uninstall codex-review@codex-review
-/plugin marketplace remove codex-review
+/plugin uninstall codex-review@andreidavid
+/plugin marketplace remove andreidavid
 ```
 
 If any stale state markers remain in projects you used the plugin in:

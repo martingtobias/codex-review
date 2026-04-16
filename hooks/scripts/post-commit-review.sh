@@ -71,14 +71,27 @@ fi
 # git whether it points into a repo, so spurious path tokens can't poison
 # the resolution.
 #
-# cd parsing is limited to the command prefix BEFORE the first `git commit`
-# token so trailing `&& cd ..` style resets don't flip us into the wrong
-# directory after the commit has already landed.
-COMMIT_OFFSET=$(printf '%s' "$COMMAND" | grep -boE '\bgit\b[^;&|]*\bcommit\b' | head -1 | cut -d: -f1 || true)
-if [ -n "$COMMIT_OFFSET" ] && [ "$COMMIT_OFFSET" -gt 0 ]; then
-  COMMAND_PREFIX="${COMMAND:0:$COMMIT_OFFSET}"
+# cd parsing is limited to the command segments BEFORE the one that runs
+# `git commit`. Splitting on shell sequence tokens (`;`, `&&`, `||`, `|`,
+# `|&`) rather than raw text means:
+#   - post-commit `cd ..` resets in the same command line are ignored
+#   - `git commit` appearing inside a quoted argument (e.g.
+#     `grep "git commit" docs`) does not terminate the prefix, because
+#     such matches are not at the start of a segment
+# If `git commit` is the very first segment, the prefix is empty and no
+# cd influences the resolution.
+COMMAND_SEGMENTED=$(printf '%s' "$COMMAND" | sed -E 's/(\|\||&&|\|&|;|\|)/\n/g')
+# Match a segment whose effective command is `git ... commit`. We tolerate
+# zero or more leading tokens before `git` so env-var assignments
+# (`GIT_AUTHOR_NAME=x git commit`) and wrappers (`sudo git commit`,
+# `env FOO=1 git commit`) are recognised.
+COMMIT_LINE=$(printf '%s\n' "$COMMAND_SEGMENTED" | awk '
+  /^[[:space:]]*([^[:space:];&|]+[[:space:]]+)*git([[:space:]]+[^[:space:];&|]+)*[[:space:]]+commit([[:space:]]|$)/ { print NR; exit }
+')
+if [ -n "$COMMIT_LINE" ] && [ "$COMMIT_LINE" -gt 1 ]; then
+  COMMAND_PREFIX=$(printf '%s\n' "$COMMAND_SEGMENTED" | awk -v n="$COMMIT_LINE" 'NR < n')
 else
-  COMMAND_PREFIX="$COMMAND"
+  COMMAND_PREFIX=""
 fi
 
 CD_RAW=$(printf '%s' "$COMMAND_PREFIX" \
@@ -169,11 +182,17 @@ if [ "$REVIEW_EXIT" -eq 0 ]; then
   fi
 fi
 
-# Truncate for display only (AFTER detection). Keep the TAIL of the summary
-# rather than the head -- Codex puts its findings list at the end, so head-
-# truncation can hide the very issues that caused HAS_ISSUES=true.
+# Truncate for display only (AFTER detection). When Codex found [P1]/[P2]
+# issues, keep the TAIL of the summary -- Codex places findings at the end,
+# so head-truncation would hide the very issues we're blocking on. For
+# error and clean-pass cases, keep the HEAD -- error messages and pass-
+# summaries are front-loaded.
 if [ ${#REVIEW_SUMMARY} -gt "$CODEX_REVIEW_MAX_OUTPUT" ]; then
-  REVIEW_SUMMARY="... [truncated head]"$'\n'"${REVIEW_SUMMARY: -$CODEX_REVIEW_MAX_OUTPUT}"
+  if [ "$HAS_ISSUES" = "true" ]; then
+    REVIEW_SUMMARY="... [truncated head]"$'\n'"${REVIEW_SUMMARY: -$CODEX_REVIEW_MAX_OUTPUT}"
+  else
+    REVIEW_SUMMARY="${REVIEW_SUMMARY:0:$CODEX_REVIEW_MAX_OUTPUT}... [truncated]"
+  fi
 fi
 
 # --- Emit verdict ---

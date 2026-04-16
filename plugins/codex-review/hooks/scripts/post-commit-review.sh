@@ -166,96 +166,25 @@ SHORT_SHA=$(printf '%s' "$HEAD_SHA" | cut -c1-8)
 STATE_FILE="$REPO_ROOT/.codex-review-state"
 LOOP_COUNTER="$REPO_ROOT/.codex-review-loop-count"
 
-# Mark in-flight so a kill (timeout) is distinguishable from a real FAIL/PASS.
-echo "RUNNING $SHORT_SHA" > "$STATE_FILE"
-trap '
-  rc=$?
-  if [ "$rc" -ne 0 ] && [ -f "$STATE_FILE" ]; then
-    s=$(cat "$STATE_FILE" 2>/dev/null || true)
-    case "$s" in
-      RUNNING*) echo "TIMEOUT" > "$STATE_FILE" ;;
-    esac
-  fi
-' EXIT
+# Resolve the history log location via Git so linked worktrees and submodules
+# (where $REPO_ROOT/.git is a file, not a directory) work correctly.
+GITDIR=$(cd "$REPO_ROOT" && git rev-parse --git-common-dir 2>/dev/null || true)
+if [ -z "$GITDIR" ]; then
+  GITDIR="$REPO_ROOT/.git"
+elif [ "${GITDIR#/}" = "$GITDIR" ]; then
+  # Relative path -- anchor it to the repo root.
+  GITDIR="$REPO_ROOT/$GITDIR"
+fi
+HISTORY_FILE="$GITDIR/codex-reviews.jsonl"
 
-# --- Run Codex review (JSONL event stream via --json) ---
-# Observed event schema (Codex CLI ~2026-04):
-#   thread.started / turn.started / turn.completed   -- lifecycle
-#   item.started / item.completed                    -- wraps each item
-# Item subtypes (.item.type):
-#   command_execution    -- tool calls the agent ran while investigating
-#   todo_list            -- progress tracking
-#   agent_message        -- the final review prose; .item.text carries it
-# We parse ONLY the agent_message(s), which isolates the final verdict
-# from tool-call noise and Codex's own priority-rubric preamble -- the
-# class of false positives that the earlier text parser produced.
+# Defaults so the EXIT trap (timeout path) has valid values to log with.
 START_TS=$(date +%s)
+REVIEW_PROSE="(review did not complete)"
+FINDINGS_JSON="[]"
 REVIEW_EXIT=0
-REVIEW_JSONL=$(cd "$REPO_ROOT" && "$CODEX_BIN" exec review --json \
-  --commit "$HEAD_SHA" \
-  --full-auto \
-  2>&1) || REVIEW_EXIT=$?
 
-# Detect JSONL mode; older Codex CLIs may emit plain text even with --json.
-JSONL_MODE=false
-if printf '%s\n' "$REVIEW_JSONL" | head -1 | jq -e 'has("type")' >/dev/null 2>&1; then
-  JSONL_MODE=true
-fi
-
-REVIEW_PROSE=""
-if [ "$JSONL_MODE" = "true" ]; then
-  REVIEW_PROSE=$(printf '%s\n' "$REVIEW_JSONL" \
-    | jq -r 'select(.type=="item.completed" and .item.type=="agent_message") | .item.text' \
-    2>/dev/null || true)
-  if [ -z "$REVIEW_PROSE" ]; then
-    REVIEW_PROSE="(Codex produced no agent_message; see Codex logs for details.)"
-  fi
-else
-  # Legacy text-parser fallback: strip ANSI, take everything from the 'codex'
-  # marker onwards. Will be removed in a future release.
-  ESC=$(printf '\033')
-  ANSI_STRIPPED=$(printf '%s\n' "$REVIEW_JSONL" | sed "s/${ESC}\\[[0-9;]*m//g")
-  REVIEW_PROSE=$(printf '%s\n' "$ANSI_STRIPPED" | sed -n '/^codex$/,$p')
-  if [ -z "$REVIEW_PROSE" ]; then
-    REVIEW_PROSE="$ANSI_STRIPPED"
-  fi
-fi
-
-# Finding detection on the clean review prose. Line-anchored pattern rejects
-# prose mentions and rubric legend entries.
-HAS_ISSUES=false
-if [ "$REVIEW_EXIT" -eq 0 ]; then
-  if printf '%s\n' "$REVIEW_PROSE" \
-      | grep -qE '^[[:space:]]*([-*>][[:space:]]+)?\[P[12]\][[:space:]]+[^=[:space:]]'; then
-    HAS_ISSUES=true
-  fi
-fi
-
-# Extract structured findings (priority + verbatim title-line) for the history
-# log. Title retains the " — file:line" suffix as emitted by Codex; callers
-# can parse further if they want. Missing-match lines are filtered by grep.
-FINDINGS_JSON=$(printf '%s\n' "$REVIEW_PROSE" \
-  | grep -E '^[[:space:]]*-?[[:space:]]*\[P[123]\][[:space:]]+' \
-  | jq -Rn '[inputs | capture("^[[:space:]]*-?[[:space:]]*\\[(?<priority>P[123])\\][[:space:]]+(?<title>.*)$")]' \
-  2>/dev/null || true)
-if ! printf '%s' "$FINDINGS_JSON" | jq -e . >/dev/null 2>&1; then
-  FINDINGS_JSON="[]"
-fi
-
-# Display text for Claude: the prose itself, tail-preserving truncation when
-# we're blocking on findings (Codex puts its list at the end).
-REVIEW_SUMMARY="$REVIEW_PROSE"
-if [ ${#REVIEW_SUMMARY} -gt "$CODEX_REVIEW_MAX_OUTPUT" ]; then
-  if [ "$HAS_ISSUES" = "true" ]; then
-    REVIEW_SUMMARY="... [truncated head]"$'\n'"${REVIEW_SUMMARY: -$CODEX_REVIEW_MAX_OUTPUT}"
-  else
-    REVIEW_SUMMARY="${REVIEW_SUMMARY:0:$CODEX_REVIEW_MAX_OUTPUT}... [truncated]"
-  fi
-fi
-
-# --- Append one line to the per-repo history log ---
-# Never blocks or fails the hook; errors are swallowed. Lives in .git/ so
-# it is never accidentally committed and is automatically scoped per-repo.
+# Append-to-history helper. Defined before the trap so the timeout path
+# can call it. Write failures are swallowed so they never break the hook.
 append_history() {
   local verdict="$1"
   local prose_log
@@ -288,8 +217,105 @@ append_history() {
       codex_exit:($codex_exit|tonumber),
       duration_seconds:($duration|tonumber),
       plugin_version:$ver}' \
-    >> "$REPO_ROOT/.git/codex-reviews.jsonl" 2>/dev/null || true
+    >> "$HISTORY_FILE" 2>/dev/null || true
 }
+
+# Mark in-flight so a kill (timeout) is distinguishable from a real FAIL/PASS.
+# On abnormal exit, downgrade state to TIMEOUT and log the event so the
+# history file faithfully records every outcome advertised in the README.
+echo "RUNNING $SHORT_SHA" > "$STATE_FILE"
+trap '
+  rc=$?
+  if [ "$rc" -ne 0 ] && [ -f "$STATE_FILE" ]; then
+    s=$(cat "$STATE_FILE" 2>/dev/null || true)
+    case "$s" in
+      RUNNING*)
+        echo "TIMEOUT" > "$STATE_FILE"
+        append_history "TIMEOUT" 2>/dev/null || true
+        ;;
+    esac
+  fi
+' EXIT
+
+# --- Run Codex review (JSONL event stream via --json) ---
+# Observed event schema (Codex CLI ~2026-04):
+#   thread.started / turn.started / turn.completed   -- lifecycle
+#   item.started / item.completed                    -- wraps each item
+# Item subtypes (.item.type):
+#   command_execution    -- tool calls the agent ran while investigating
+#   todo_list            -- progress tracking
+#   agent_message        -- the final review prose; .item.text carries it
+# We parse ONLY the agent_message(s), which isolates the final verdict
+# from tool-call noise and Codex's own priority-rubric preamble -- the
+# class of false positives that the earlier text parser produced.
+# Capture stdout (JSONL events) and stderr separately. Mixing them with 2>&1
+# lets Codex startup warnings (e.g. a "could not update PATH" line on
+# read-only filesystems) contaminate the first line of the stream, which
+# defeats the JSONL_MODE probe and silently forces the fallback parser.
+STDERR_FILE=$(mktemp 2>/dev/null || echo "/tmp/codex-review-stderr.$$")
+REVIEW_JSONL=$(cd "$REPO_ROOT" && "$CODEX_BIN" exec review --json \
+  --commit "$HEAD_SHA" \
+  --full-auto \
+  2>"$STDERR_FILE") || REVIEW_EXIT=$?
+REVIEW_STDERR=$(cat "$STDERR_FILE" 2>/dev/null || true)
+rm -f "$STDERR_FILE"
+
+# Detect JSONL mode; older Codex CLIs may emit plain text even with --json.
+JSONL_MODE=false
+if printf '%s\n' "$REVIEW_JSONL" | head -1 | jq -e 'has("type")' >/dev/null 2>&1; then
+  JSONL_MODE=true
+fi
+
+REVIEW_PROSE=""
+if [ "$JSONL_MODE" = "true" ]; then
+  REVIEW_PROSE=$(printf '%s\n' "$REVIEW_JSONL" \
+    | jq -r 'select(.type=="item.completed" and .item.type=="agent_message") | .item.text' \
+    2>/dev/null || true)
+  if [ -z "$REVIEW_PROSE" ]; then
+    REVIEW_PROSE="(Codex produced no agent_message; stderr: ${REVIEW_STDERR:-<empty>})"
+  fi
+else
+  # Legacy text-parser fallback: strip ANSI, take everything from the 'codex'
+  # marker onwards. Will be removed in a future release.
+  ESC=$(printf '\033')
+  ANSI_STRIPPED=$(printf '%s\n' "$REVIEW_JSONL" | sed "s/${ESC}\\[[0-9;]*m//g")
+  REVIEW_PROSE=$(printf '%s\n' "$ANSI_STRIPPED" | sed -n '/^codex$/,$p')
+  if [ -z "$REVIEW_PROSE" ]; then
+    REVIEW_PROSE="$ANSI_STRIPPED"
+  fi
+fi
+
+# Finding detection on the clean review prose. Line-anchored pattern rejects
+# prose mentions and rubric legend entries.
+HAS_ISSUES=false
+if [ "$REVIEW_EXIT" -eq 0 ]; then
+  if printf '%s\n' "$REVIEW_PROSE" \
+      | grep -qE '^[[:space:]]*([-*>][[:space:]]+)?\[P[12]\][[:space:]]+[^=[:space:]]'; then
+    HAS_ISSUES=true
+  fi
+fi
+
+# Extract structured findings (priority + verbatim title-line) for the history
+# log. Title retains the " — file:line" suffix as emitted by Codex; callers
+# can parse further if they want. Missing-match lines are filtered by grep.
+FINDINGS_JSON=$(printf '%s\n' "$REVIEW_PROSE" \
+  | grep -E '^[[:space:]]*([-*>][[:space:]]+)?\[P[123]\][[:space:]]+' \
+  | jq -Rn '[inputs | capture("^[[:space:]]*([-*>][[:space:]]+)?\\[(?<priority>P[123])\\][[:space:]]+(?<title>.*)$")]' \
+  2>/dev/null || true)
+if ! printf '%s' "$FINDINGS_JSON" | jq -e . >/dev/null 2>&1; then
+  FINDINGS_JSON="[]"
+fi
+
+# Display text for Claude: the prose itself, tail-preserving truncation when
+# we're blocking on findings (Codex puts its list at the end).
+REVIEW_SUMMARY="$REVIEW_PROSE"
+if [ ${#REVIEW_SUMMARY} -gt "$CODEX_REVIEW_MAX_OUTPUT" ]; then
+  if [ "$HAS_ISSUES" = "true" ]; then
+    REVIEW_SUMMARY="... [truncated head]"$'\n'"${REVIEW_SUMMARY: -$CODEX_REVIEW_MAX_OUTPUT}"
+  else
+    REVIEW_SUMMARY="${REVIEW_SUMMARY:0:$CODEX_REVIEW_MAX_OUTPUT}... [truncated]"
+  fi
+fi
 
 # --- Emit verdict ---
 if [ "$REVIEW_EXIT" -ne 0 ]; then

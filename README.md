@@ -11,11 +11,9 @@ A Claude Code plugin that runs an automatic code review with OpenAI Codex CLI af
 ## Install
 
 ```text
-/plugin marketplace add <github-owner>/codex-review
+/plugin marketplace add andreidavid/codex-review
 /plugin install codex-review@codex-review
 ```
-
-Replace `<github-owner>` with the GitHub user or org this repo is hosted under.
 
 To pull updates after the repo changes:
 

@@ -70,7 +70,18 @@ fi
 # `git -C` wins if both are present. Each candidate is validated by asking
 # git whether it points into a repo, so spurious path tokens can't poison
 # the resolution.
-CD_RAW=$(printf '%s' "$COMMAND" \
+#
+# cd parsing is limited to the command prefix BEFORE the first `git commit`
+# token so trailing `&& cd ..` style resets don't flip us into the wrong
+# directory after the commit has already landed.
+COMMIT_OFFSET=$(printf '%s' "$COMMAND" | grep -boE '\bgit\b[^;&|]*\bcommit\b' | head -1 | cut -d: -f1 || true)
+if [ -n "$COMMIT_OFFSET" ] && [ "$COMMIT_OFFSET" -gt 0 ]; then
+  COMMAND_PREFIX="${COMMAND:0:$COMMIT_OFFSET}"
+else
+  COMMAND_PREFIX="$COMMAND"
+fi
+
+CD_RAW=$(printf '%s' "$COMMAND_PREFIX" \
   | grep -oE "\\bcd[[:space:]]+(\"[^\"]+\"|'[^']+'|[^[:space:];&|]+)" \
   | tail -1 || true)
 CD_DIR=""
@@ -158,9 +169,11 @@ if [ "$REVIEW_EXIT" -eq 0 ]; then
   fi
 fi
 
-# Truncate for display only (AFTER detection).
+# Truncate for display only (AFTER detection). Keep the TAIL of the summary
+# rather than the head -- Codex puts its findings list at the end, so head-
+# truncation can hide the very issues that caused HAS_ISSUES=true.
 if [ ${#REVIEW_SUMMARY} -gt "$CODEX_REVIEW_MAX_OUTPUT" ]; then
-  REVIEW_SUMMARY="${REVIEW_SUMMARY:0:$CODEX_REVIEW_MAX_OUTPUT}... [truncated]"
+  REVIEW_SUMMARY="... [truncated head]"$'\n'"${REVIEW_SUMMARY: -$CODEX_REVIEW_MAX_OUTPUT}"
 fi
 
 # --- Emit verdict ---

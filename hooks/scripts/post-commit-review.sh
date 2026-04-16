@@ -66,7 +66,18 @@ if [ -z "$SESSION_CWD" ]; then
   SESSION_CWD="${CLAUDE_PROJECT_DIR:-$PWD}"
 fi
 
-# Respect explicit `git -C <dir>` in the command (quoted or unquoted)
+# Honor `cd <dir>` and `git -C <dir>` in the command (quoted or unquoted).
+# `git -C` wins if both are present. Each candidate is validated by asking
+# git whether it points into a repo, so spurious path tokens can't poison
+# the resolution.
+CD_RAW=$(printf '%s' "$COMMAND" \
+  | grep -oE "\\bcd[[:space:]]+(\"[^\"]+\"|'[^']+'|[^[:space:];&|]+)" \
+  | tail -1 || true)
+CD_DIR=""
+if [ -n "$CD_RAW" ]; then
+  CD_DIR=$(printf '%s' "$CD_RAW" | sed -E "s/^cd[[:space:]]+//; s/^\"(.*)\"$/\\1/; s/^'(.*)'$/\\1/")
+fi
+
 GIT_C_RAW=$(printf '%s' "$COMMAND" \
   | grep -oE "git[[:space:]]+-C[[:space:]]+(\"[^\"]+\"|'[^']+'|[^[:space:];&|]+)" \
   | tail -1 || true)
@@ -76,10 +87,16 @@ if [ -n "$GIT_C_RAW" ]; then
 fi
 
 CANDIDATE_DIR="$SESSION_CWD"
+if [ -n "$CD_DIR" ]; then
+  case "$CD_DIR" in
+    /*) CANDIDATE_DIR="$CD_DIR" ;;
+    *)  CANDIDATE_DIR="$SESSION_CWD/$CD_DIR" ;;
+  esac
+fi
 if [ -n "$GIT_C_DIR" ]; then
   case "$GIT_C_DIR" in
     /*) CANDIDATE_DIR="$GIT_C_DIR" ;;
-    *)  CANDIDATE_DIR="$SESSION_CWD/$GIT_C_DIR" ;;
+    *)  CANDIDATE_DIR="$CANDIDATE_DIR/$GIT_C_DIR" ;;
   esac
 fi
 
@@ -127,21 +144,23 @@ if [ -z "$REVIEW_SUMMARY" ]; then
   REVIEW_SUMMARY="$ANSI_STRIPPED"
 fi
 
-# Truncate for display only.
-if [ ${#REVIEW_SUMMARY} -gt "$CODEX_REVIEW_MAX_OUTPUT" ]; then
-  REVIEW_SUMMARY="${REVIEW_SUMMARY:0:$CODEX_REVIEW_MAX_OUTPUT}... [truncated]"
-fi
-
 # Finding detection: real findings appear in the summary section as lines that
 # START with [P1]/[P2] (optionally after a list marker/quote), followed by
 # whitespace and non-'=' content. This rejects in-paragraph mentions and the
 # rubric legend (e.g., "[P1] = must-fix"). Only evaluated on exit-0 output.
+# Run detection on the FULL summary before any truncation, so late findings
+# aren't silently dropped.
 HAS_ISSUES=false
 if [ "$REVIEW_EXIT" -eq 0 ]; then
   if printf '%s\n' "$REVIEW_SUMMARY" \
       | grep -qE '^[[:space:]]*([-*>][[:space:]]+)?\[P[12]\][[:space:]]+[^=[:space:]]'; then
     HAS_ISSUES=true
   fi
+fi
+
+# Truncate for display only (AFTER detection).
+if [ ${#REVIEW_SUMMARY} -gt "$CODEX_REVIEW_MAX_OUTPUT" ]; then
+  REVIEW_SUMMARY="${REVIEW_SUMMARY:0:$CODEX_REVIEW_MAX_OUTPUT}... [truncated]"
 fi
 
 # --- Emit verdict ---

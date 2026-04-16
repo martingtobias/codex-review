@@ -80,13 +80,38 @@ fi
 #     such matches are not at the start of a segment
 # If `git commit` is the very first segment, the prefix is empty and no
 # cd influences the resolution.
-COMMAND_SEGMENTED=$(printf '%s' "$COMMAND" | sed -E 's/(\|\||&&|\|&|;|\|)/\n/g')
-# Match a segment whose effective command is `git ... commit`. We tolerate
-# zero or more leading tokens before `git` so env-var assignments
-# (`GIT_AUTHOR_NAME=x git commit`) and wrappers (`sudo git commit`,
-# `env FOO=1 git commit`) are recognised.
+# Segment the command on unquoted shell sequence operators (;, &&, ||, |, |&).
+# Quote-aware: operators inside single- or double-quoted strings do NOT split,
+# so `cd "sub;repo" && git commit` stays correctly segmented.
+COMMAND_SEGMENTED=$(printf '%s' "$COMMAND" | awk '
+{
+  out = ""
+  in_single = 0
+  in_double = 0
+  i = 1
+  L = length($0)
+  while (i <= L) {
+    c = substr($0, i, 1)
+    nxt = (i < L) ? substr($0, i, 2) : ""
+    if (c == "\47" && !in_double) { in_single = !in_single; out = out c; i++; continue }
+    if (c == "\"" && !in_single) { in_double = !in_double; out = out c; i++; continue }
+    if (!in_single && !in_double) {
+      if (nxt == "||" || nxt == "&&" || nxt == "|&") { out = out "\n"; i += 2; continue }
+      if (c == ";" || c == "|")                       { out = out "\n"; i++;   continue }
+    }
+    out = out c
+    i++
+  }
+  print out
+}')
+
+# Match a segment whose effective command is `git ... commit`. Tolerate:
+#   - leading env-assignments / wrappers (GIT_AUTHOR_NAME=x git commit,
+#     sudo git commit, env FOO=1 git commit)
+#   - a leading `(` (subshell grouping, e.g. `(git commit -m x)`)
+#   - path-qualified git (e.g. `/usr/bin/git commit`, `./bin/git commit`)
 COMMIT_LINE=$(printf '%s\n' "$COMMAND_SEGMENTED" | awk '
-  /^[[:space:]]*([^[:space:];&|]+[[:space:]]+)*git([[:space:]]+[^[:space:];&|]+)*[[:space:]]+commit([[:space:]]|$)/ { print NR; exit }
+  /^[[:space:]]*([^[:space:];&|]+[[:space:]]+)*\(?([^[:space:];&|]*\/)?git([[:space:]]+[^[:space:];&|]+)*[[:space:]]+commit([[:space:]]|$)/ { print NR; exit }
 ')
 if [ -n "$COMMIT_LINE" ] && [ "$COMMIT_LINE" -gt 1 ]; then
   COMMAND_PREFIX=$(printf '%s\n' "$COMMAND_SEGMENTED" | awk -v n="$COMMIT_LINE" 'NR < n')

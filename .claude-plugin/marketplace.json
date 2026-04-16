@@ -7,7 +7,7 @@
   "plugins": [
     {
       "name": "codex-review",
-      "source": ".",
+      "source": "./plugins/codex-review",
       "description": "Automatic post-commit code review using OpenAI Codex CLI.",
       "version": "1.1.0"
     }

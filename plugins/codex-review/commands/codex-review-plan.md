@@ -35,18 +35,19 @@ If the file doesn't exist, tell the user the path you checked and stop without r
 
 ### 2. Run Codex against the plan
 
-Invoke:
+Invoke (honor `$CODEX_BIN` the same way the post-commit hook does, and pass `--skip-git-repo-check` so reviewing a plan works from any directory — scratch folders, non-git trees, etc.):
 
 ```bash
-codex exec --full-auto "Review the implementation plan at <PATH>. Read it fully, then critique from these angles: missing steps or gaps; design flaws or wrong-architecture choices; scope creep or under-scoping; risks and unhandled edge cases; verification that's insufficient or missing. Format findings using priorities: [P1] = critical (the plan will fail or produce wrong outcomes as written), [P2] = important (will cause rework), [P3] = advisory. If nothing material is wrong, say so explicitly."
+"${CODEX_BIN:-codex}" exec --full-auto --skip-git-repo-check "Review the implementation plan at <PATH>. Read it fully, then critique from these angles: missing steps or gaps; design flaws or wrong-architecture choices; scope creep or under-scoping; risks and unhandled edge cases; verification that's insufficient or missing. Format findings using priorities: [P1] = critical (the plan will fail or produce wrong outcomes as written), [P2] = important (will cause rework), [P3] = advisory. If nothing material is wrong, say so explicitly."
 ```
 
 Notes:
 
 - Substitute the resolved `<PATH>` literally into the prompt so Codex can read the file from its sandbox.
 - `--full-auto` runs sandboxed and non-interactive, matching the post-commit hook.
+- `--skip-git-repo-check` is required because Codex aborts in non-repo / untrusted-dir contexts by default; plan review has no git dependency so always skip the check.
 - Do **not** pass `--json` — this command is interactive; the user reads the prose directly.
-- Expect 30–120 seconds for a moderate plan.
+- Expect 30–120 seconds for a moderate plan; complex plans can take longer.
 
 ### 3. Present the review
 

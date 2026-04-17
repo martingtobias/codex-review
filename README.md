@@ -41,6 +41,7 @@ The marketplace was renamed from `codex-review` to `andreidavid` in an early ite
 ## What this plugin adds
 
 - **Slash command** `/codex-review` — on-demand review of a specific commit, uncommitted changes, or a branch diff. Arguments: `[--commit <sha>] [--uncommitted] [--base <branch>]`.
+- **Slash command** `/codex-review-plan` — run a Codex review on a Claude Code plan file in `~/.claude/plans/` before committing to implementation. Arguments: `[path-to-plan.md]`.
 - **Skill** `codex-review` — invoked when you ask Claude to "review my changes", "run a codex review", etc.
 - **PostToolUse hook** — after every successful `git commit` made via the Bash tool, Codex reviews the new commit. `[P1]`/`[P2]` findings block Claude and instruct it to fix and re-commit.
 - **Stop hook** — keeps Claude iterating through the fix/re-commit cycle until the review passes, capped at `CODEX_REVIEW_MAX_LOOPS` iterations (default 5).
@@ -48,6 +49,21 @@ The marketplace was renamed from `codex-review` to `andreidavid` in an early ite
 > **Scope:** only commits that Claude itself makes via the Bash tool trigger the review. Commits you run in your own terminal (outside a Claude Code session) are not reviewed — the hook has no visibility into them. Use the `/codex-review` slash command or the skill to review those on demand.
 >
 > The PostToolUse hook is registered for every Bash tool call; a fast filter inside the script lets unrelated calls fall through in milliseconds, and only successful `git commit` commands escalate to running Codex.
+
+## Reviewing Claude Code plans
+
+Claude Code's plan mode writes an implementation plan to `~/.claude/plans/<name>.md` before you approve execution. `/codex-review-plan` asks Codex to critique that plan (missing steps, design flaws, scope/risk, verification gaps) so you catch problems before they ship as code.
+
+```text
+# Review the most recently modified plan in ~/.claude/plans/
+/codex-review-plan
+
+# Review a specific file (absolute or relative path)
+/codex-review-plan /home/andrei/.claude/plans/my-plan.md
+/codex-review-plan my-plan.md          # resolves against ~/.claude/plans/
+```
+
+Unlike the commit review, this uses `codex exec` (ad-hoc prose review) rather than `codex exec review` (which is diff-oriented). No git state is required. Findings use the same `[P1]`/`[P2]`/`[P3]` priority scheme; `[P1]` / `[P2]` issues suggest revising the plan before implementation.
 
 ## Cost and latency
 

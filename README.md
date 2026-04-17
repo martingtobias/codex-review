@@ -136,6 +136,7 @@ Under the hood, the post-commit hook invokes `codex exec review --json` and pars
 - **Codex not found** — `command -v codex` returns empty. Install with `npm install -g @openai/codex`, or set `CODEX_BIN=/path/to/codex`.
 - **Codex auth failure on review** — run `codex login` or export `OPENAI_API_KEY`.
 - **Review keeps failing on obviously clean commits** — file an issue with the verbatim Codex output. As a workaround, `rm .codex-review-state` and set `CODEX_REVIEW_SKIP=1`.
+- **Every review hits the 300s hook timeout** — check for a misbehaving Codex MCP server. Run `codex exec review --json --commit HEAD --full-auto 2>/dev/null | jq -c 'select(((.type // "") + "/" + (.item.type // "")) | test("mcp"; "i"))'` — the filter scopes to event/item type fields (ignores prose or diff text that merely mentions MCP) and tolerates schema variation across Codex versions. Look for an event that starts but never completes. If you spot one, temporarily comment out the offending `[mcp_servers.<name>]` block in `~/.codex/config.toml` and retry.
 - **Reset review history** — `rm .git/codex-reviews.jsonl` in the affected repo.
 
 ## Uninstall

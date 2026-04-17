@@ -261,8 +261,14 @@ REVIEW_STDERR=$(cat "$STDERR_FILE" 2>/dev/null || true)
 rm -f "$STDERR_FILE"
 
 # Detect JSONL mode; older Codex CLIs may emit plain text even with --json.
+# Extract the first line via bash parameter expansion rather than `| head -1`:
+# under `set -o pipefail`, `head` closing stdin early sends SIGPIPE to the
+# upstream `printf`, causing the whole pipeline to return non-zero even when
+# jq matched. That silently forced every JSONL review to fall back to the
+# legacy text parser and surfaced the raw event stream as review prose.
 JSONL_MODE=false
-if printf '%s\n' "$REVIEW_JSONL" | head -1 | jq -e 'has("type")' >/dev/null 2>&1; then
+FIRST_LINE="${REVIEW_JSONL%%$'\n'*}"
+if [ -n "$FIRST_LINE" ] && printf '%s' "$FIRST_LINE" | jq -e 'has("type")' >/dev/null 2>&1; then
   JSONL_MODE=true
 fi
 

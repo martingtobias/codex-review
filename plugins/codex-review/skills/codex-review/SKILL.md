@@ -8,39 +8,51 @@ allowed-tools: Bash, Read
 
 Run automated code reviews using OpenAI Codex CLI (`codex exec review`).
 
+This skill is the single source of truth for the on-demand review workflow;
+the `/codex-review` slash command delegates here.
+
 ## Codex Binary
 
-The `codex` binary must be on `$PATH`. See the plugin README for installation.
+Honor `$CODEX_BIN` if set; otherwise the `codex` binary must be on `$PATH`.
+See the plugin README for installation. All invocations below use
+`"${CODEX_BIN:-codex}"`.
 
 ## Review Modes
 
 ### Review a specific commit
 
 ```bash
-codex exec review --commit <SHA> --full-auto
+"${CODEX_BIN:-codex}" exec review --commit <SHA> --full-auto
 ```
 
 ### Review uncommitted changes (staged + unstaged + untracked)
 
 ```bash
-codex exec review --uncommitted --full-auto
+"${CODEX_BIN:-codex}" exec review --uncommitted --full-auto
 ```
 
 ### Review branch diff against a base branch
 
 ```bash
-codex exec review --base <branch> --full-auto
+"${CODEX_BIN:-codex}" exec review --base <branch> --full-auto
 ```
 
-**Note:** `--commit`, `--uncommitted`, and `--base` are mutually exclusive with custom prompt arguments. Codex uses its own built-in review logic.
+**Note:** `--commit`, `--uncommitted`, and `--base` are mutually exclusive
+with custom prompt arguments. Codex uses its own built-in review logic.
+
+## Argument Mapping
+
+Whether invoked via `/codex-review <args>` or natural language, map the
+request to a mode like this:
+
+- Nothing specified → review the latest commit: `--commit $(git rev-parse HEAD)`
+- A commit SHA (bare or via `--commit <sha>`) → `--commit <sha>`
+- `--uncommitted`, or the user says "working changes" / "uncommitted" → `--uncommitted`
+- `--base <branch>`, or the user names a base branch → `--base <branch>`
 
 ## Workflow
 
-1. Determine what to review based on user request:
-   - If a commit SHA is provided, use `--commit <SHA>`
-   - If `--uncommitted` or "working changes" mentioned, use `--uncommitted`
-   - If a base branch is provided, use `--base <branch>`
-   - If nothing specified, review the latest commit: `--commit $(git rev-parse HEAD)`
+1. Determine what to review (see Argument Mapping above)
 
 2. Run the codex review command
 

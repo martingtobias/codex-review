@@ -2,6 +2,22 @@
 
 All notable changes to the `codex-review` plugin, newest first.
 
+## 1.4.0
+
+- **Reviews run under `timeout(1)`** (`CODEX_REVIEW_TIMEOUT`, default 280s, under the 300s harness hook limit). Previously a hung review was killed by the harness with a fatal signal, which skips bash EXIT traps: state stayed `RUNNING` forever and the advertised `TIMEOUT` history line was never written. The trap remains as a backstop for script failures and now records `ERROR` instead of mislabeling them as timeouts.
+- **ERROR/TIMEOUT verdicts no longer block.** Codex infrastructure failures (auth, rate limits, hangs) surface as non-blocking context; only genuine `[P1]`/`[P2]` findings block.
+- **State moved into `.git/`** (`codex-review-state`, `codex-review-loop-count`), resolved via `git rev-parse --git-common-dir` like the history log. The fix loop can no longer commit its own markers via `git add -A`, and per-project `.gitignore` entries are obsolete. Legacy working-tree markers are removed automatically on the first hook run.
+- **Stale-state self-healing.** State records `<verdict> <sha> <epoch>`. The Stop hook clears a `FAIL` whose commit no longer matches HEAD or that is over an hour old (an abandoned session can't hijack later turns), clears `RUNNING` fossils older than 10 minutes, and honors `stop_hook_active` as a corruption guard when the loop counter vanishes mid-loop.
+- **Commit success decided by git, not stdout prose.** HEAD freshness (committer timestamp within 15s) plus history dedup replace the "N files changed" sniffing, which missed `git commit -q` and non-English locales and false-positived on commands like `git log --grep commit --stat`. Dedup also stops re-paying for a re-review of an already-reviewed sha.
+- **File-based kill switch** `.git/codex-review-skip` — works mid-session, unlike `CODEX_REVIEW_SKIP`, which hooks only inherit from Claude Code's launch environment.
+- **Findings/verdict consistency.** Rubric legend lines (`[P1] = critical`) are excluded from history findings, so `blocking_count` can no longer read >0 on a `PASS`.
+- **`plugin_version` in history entries read from `plugin.json`** (was hardcoded and had drifted).
+- **Portability.** POSIX character-class regexes replace GNU `\b` (absent from BSD grep); the base64 round-trip is replaced with a pure-jq JSON-literal round-trip (macOS `base64` decode flags differ).
+- **Repo resolution.** `cd` chains in the command prefix apply cumulatively (`cd a && cd b && git commit` resolves `a/b`); `git -C` is extracted from the commit segment only, so a `-C` on another command in the same line can't redirect the review to the wrong repo.
+- **Skill/command dedup.** `SKILL.md` is the single source of the review workflow; `/codex-review` delegates to it. Skill frontmatter fixed to use `allowed-tools` (`tools` was silently ignored, leaving the skill unrestricted).
+- **Numeric env knobs validated** (`CODEX_REVIEW_MAX_OUTPUT`, `CODEX_REVIEW_TIMEOUT`, `CODEX_REVIEW_MAX_LOOPS`); garbage values fall back to defaults instead of tripping `set -e`.
+- **Test suite + CI.** 35 bats tests cover both hooks end to end with a stub codex CLI; GitHub Actions runs shellcheck and the suite on ubuntu-latest and macos-latest.
+
 ## 1.3.0
 
 - **New slash command** `/codex-review-plan [path]` — runs a Codex review on a Claude Code plan file in `~/.claude/plans/` before the user approves execution. No git state required; uses `codex exec` with `--skip-git-repo-check` so it works from any directory. Honors `$CODEX_BIN` (matches the post-commit hook's pattern).

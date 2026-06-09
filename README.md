@@ -43,7 +43,7 @@ The marketplace was renamed from `codex-review` to `andreidavid` in an early ite
 - **Slash command** `/codex-review` — on-demand review of a specific commit, uncommitted changes, or a branch diff. Arguments: `[--commit <sha>] [--uncommitted] [--base <branch>]`.
 - **Slash command** `/codex-review-plan` — run a Codex review on a Claude Code plan file in `~/.claude/plans/` before committing to implementation. Arguments: `[path-to-plan.md]`.
 - **Skill** `codex-review` — invoked when you ask Claude to "review my changes", "run a codex review", etc.
-- **PostToolUse hook** — after every successful `git commit` made via the Bash tool, Codex reviews the new commit. `[P1]`/`[P2]` findings block Claude and instruct it to fix and re-commit.
+- **PostToolUse hook** — after every successful `git commit` made via the Bash tool, Codex reviews the new commit. `[P1]`/`[P2]` findings block Claude and instruct it to fix and re-commit. Codex errors and timeouts do **not** block — only findings do.
 - **Stop hook** — keeps Claude iterating through the fix/re-commit cycle until the review passes, capped at `CODEX_REVIEW_MAX_LOOPS` iterations (default 5).
 
 > **Scope:** only commits that Claude itself makes via the Bash tool trigger the review. Commits you run in your own terminal (outside a Claude Code session) are not reviewed — the hook has no visibility into them. Use the `/codex-review` slash command or the skill to review those on demand.
@@ -67,9 +67,9 @@ Unlike the commit review, this uses `codex exec` (ad-hoc prose review) rather th
 
 ## Cost and latency
 
-Each triggered review is one Codex API call billed to your OpenAI account. The Stop-hook fix loop can run up to `CODEX_REVIEW_MAX_LOOPS` reviews per blocked session (default 5). The hook has a 300-second timeout per review; very large commits may hit it — use `/codex-review` on smaller slices in that case.
+Each triggered review is one Codex API call billed to your OpenAI account. The Stop-hook fix loop can run up to `CODEX_REVIEW_MAX_LOOPS` reviews per blocked session (default 5). Reviews run under a 280-second timeout (`CODEX_REVIEW_TIMEOUT`); a review that exceeds it is recorded as `TIMEOUT` and does **not** block — use `/codex-review` on smaller slices for very large commits.
 
-If you're about to do a run of experimental or throwaway commits, bypass the plugin with `export CODEX_REVIEW_SKIP=1` for that session.
+If you're about to do a run of experimental or throwaway commits, bypass the plugin with `touch .git/codex-review-skip` in the repo (delete the file to re-enable). Setting `CODEX_REVIEW_SKIP=1` does the same, but only if exported **before launching Claude Code** — hooks inherit the launch environment, so exporting it mid-session has no effect.
 
 ## Configuration
 
@@ -77,26 +77,25 @@ Environment variables:
 
 | Variable | Default | Effect |
 |---|---|---|
-| `CODEX_REVIEW_SKIP` | *unset* | If set to any non-empty value, both hooks no-op. Per-session kill switch. |
+| `CODEX_REVIEW_SKIP` | *unset* | If set to any non-empty value **at Claude Code launch**, both hooks no-op. For a mid-session switch, use the kill-switch file below. |
 | `CODEX_REVIEW_MAX_LOOPS` | `5` | Max iterations of the fix-and-recommit loop before the Stop hook lets Claude end the turn. |
+| `CODEX_REVIEW_TIMEOUT` | `280` | Seconds before an in-flight review is killed and recorded as `TIMEOUT` (non-blocking). Kept under the 300s hook timeout so the script observes the kill itself. |
 | `CODEX_BIN` | `$(command -v codex)` | Override path to the Codex binary. |
 | `CODEX_REVIEW_MAX_OUTPUT` | `8000` | Max characters of review output surfaced back to Claude. |
 
-To disable the plugin for a whole session without uninstalling, use `/plugin disable codex-review@andreidavid`.
+Per-repo kill switch: `touch .git/codex-review-skip` disables both hooks for that repo until the file is removed. To disable the plugin everywhere without uninstalling, use `/plugin disable codex-review@andreidavid`.
 
 ## State files
 
-The hooks write small markers into the repo's working tree during a review cycle:
+The hooks keep their working state inside the repo's `.git` directory — never the working tree, so nothing can be accidentally committed and no `.gitignore` edits are needed:
 
-- `.codex-review-state` — current verdict (`RUNNING` / `FAIL` / `ERROR` / `TIMEOUT`)
-- `.codex-review-loop-count` — fix-loop counter
+- `.git/codex-review-state` — current verdict (`RUNNING` / `FAIL` / `ERROR` / `TIMEOUT`) plus the commit SHA and a timestamp used for staleness detection
+- `.git/codex-review-loop-count` — fix-loop counter
+- `.git/codex-review-skip` — create this file to disable both hooks for the repo
 
-Add them to the `.gitignore` of any project you use the plugin in:
+Stale state heals itself: the Stop hook clears a `FAIL` whose commit no longer matches HEAD or that is over an hour old, and clears `RUNNING` markers older than 10 minutes (fossils of a killed review).
 
-```
-.codex-review-state
-.codex-review-loop-count
-```
+Upgrading from a pre-1.4.0 install: the old working-tree markers (`.codex-review-state`, `.codex-review-loop-count`) are removed automatically the first time a hook runs, and the `.gitignore` entries they required can be deleted.
 
 ## Review history
 
@@ -129,14 +128,18 @@ To reset history, `rm .git/codex-reviews.jsonl`. Nothing in the plugin relies on
 
 Under the hood, the post-commit hook invokes `codex exec review --json` and parses the `agent_message` event from Codex's JSONL event stream. This replaces the earlier sed/grep text-scraping that produced false positives. If your Codex CLI is older and ignores `--json`, the hook falls back to the legacy text parser and still works — upgrade when convenient.
 
+## Development
+
+`bats tests` runs the test suite (35 tests, stub Codex CLI — no API calls). CI runs shellcheck plus the suite on Linux and macOS.
+
 ## Troubleshooting
 
-- **Stuck in a fix loop / Stop hook keeps blocking** — interrupt Claude (Ctrl-C), then `rm -f .codex-review-state .codex-review-loop-count` in the repo root. Or set `CODEX_REVIEW_SKIP=1` for the rest of the session.
-- **"Hook timed out" message** — Codex exceeded the 300-second limit. Try `/codex-review` on a smaller slice, or break the commit up.
+- **Stuck in a fix loop / Stop hook keeps blocking** — interrupt Claude (Ctrl-C), then `rm -f .git/codex-review-state .git/codex-review-loop-count` in the repo, or `touch .git/codex-review-skip`. (Stale state from an abandoned loop also clears itself: see State files.)
+- **Review timed out** — Codex exceeded `CODEX_REVIEW_TIMEOUT` (280s). The commit is not blocked; the timeout is logged to the history file. Re-check with `/codex-review`, break the commit up, or raise the variable.
 - **Codex not found** — `command -v codex` returns empty. Install with `npm install -g @openai/codex`, or set `CODEX_BIN=/path/to/codex`.
-- **Codex auth failure on review** — run `codex login` or export `OPENAI_API_KEY`.
-- **Review keeps failing on obviously clean commits** — file an issue with the verbatim Codex output. As a workaround, `rm .codex-review-state` and set `CODEX_REVIEW_SKIP=1`.
-- **Every review hits the 300s hook timeout** — check for a misbehaving Codex MCP server. Run `codex exec review --json --commit HEAD --full-auto 2>/dev/null | jq -c 'select(((.type // "") + "/" + (.item.type // "")) | test("mcp"; "i"))'` — the filter scopes to event/item type fields (ignores prose or diff text that merely mentions MCP) and tolerates schema variation across Codex versions. Look for an event that starts but never completes. If you spot one, temporarily comment out the offending `[mcp_servers.<name>]` block in `~/.codex/config.toml` and retry.
+- **Codex auth failure on review** — run `codex login` or export `OPENAI_API_KEY`. Auth failures don't block commits; they're logged as `ERROR`.
+- **Review keeps failing on obviously clean commits** — file an issue with the verbatim Codex output. As a workaround, `touch .git/codex-review-skip`.
+- **Every review times out** — check for a misbehaving Codex MCP server. Run `codex exec review --json --commit HEAD --full-auto 2>/dev/null | jq -c 'select(((.type // "") + "/" + (.item.type // "")) | test("mcp"; "i"))'` — the filter scopes to event/item type fields (ignores prose or diff text that merely mentions MCP) and tolerates schema variation across Codex versions. Look for an event that starts but never completes. If you spot one, temporarily comment out the offending `[mcp_servers.<name>]` block in `~/.codex/config.toml` and retry.
 - **Reset review history** — `rm .git/codex-reviews.jsonl` in the affected repo.
 
 ## Uninstall
@@ -149,5 +152,6 @@ Under the hood, the post-commit hook invokes `codex exec review --json` and pars
 If any stale state markers remain in projects you used the plugin in:
 
 ```
-rm -f .codex-review-state .codex-review-loop-count
+rm -f .git/codex-review-state .git/codex-review-loop-count .git/codex-review-skip
+rm -f .codex-review-state .codex-review-loop-count   # pre-1.4.0 locations
 ```

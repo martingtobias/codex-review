@@ -2,6 +2,12 @@
 
 All notable changes to the `codex-review` plugin, newest first.
 
+## 1.5.0
+
+- **Finding waivers.** New `/codex-review-waive` command suppresses a disputed finding per-repo: keys live in `.git/codex-review-waived`, matched on normalized title (case, whitespace, and line numbers stripped, so shifted-line re-reports stay waived). Waivers suppress blocking only — waived findings remain in the history log with `"waived": true`, `blocking_count` excludes them, a new `waived_count` field and message notes keep suppression visible, and each finding now carries its `waive_key` so the command can copy it verbatim.
+- **SessionStart health check.** A missing or unauthenticated codex CLI used to disable reviews silently. A new SessionStart hook emits one line of context when reviews won't run (`CODEX_REVIEW_SKIP` set, `.git/codex-review-skip` present, codex binary missing, `codex login status` failing) and stays silent when healthy.
+- **Amend-aware fix guidance.** The fix loop now advises `git commit --amend` while the reviewed commit is unpushed, keeping broken intermediate versions out of history entirely; if the commit is already on a remote (e.g. a `git commit && git push` one-liner), it advises a new commit and never suggests rewriting published history.
+
 ## 1.4.0
 
 - **Reviews run under `timeout(1)`** (`CODEX_REVIEW_TIMEOUT`, default 280s, under the 300s harness hook limit). Previously a hung review was killed by the harness with a fatal signal, which skips bash EXIT traps: state stayed `RUNNING` forever and the advertised `TIMEOUT` history line was never written. The trap remains as a backstop for script failures and now records `ERROR` instead of mislabeling them as timeouts.

@@ -42,9 +42,11 @@ The marketplace was renamed from `codex-review` to `andreidavid` in an early ite
 
 - **Slash command** `/codex-review` — on-demand review of a specific commit, uncommitted changes, or a branch diff. Arguments: `[--commit <sha>] [--uncommitted] [--base <branch>]`.
 - **Slash command** `/codex-review-plan` — run a Codex review on a Claude Code plan file in `~/.claude/plans/` before committing to implementation. Arguments: `[path-to-plan.md]`.
+- **Slash command** `/codex-review-waive` — suppress a disputed finding so it stops blocking commits (see [Waiving findings](#waiving-findings)).
 - **Skill** `codex-review` — invoked when you ask Claude to "review my changes", "run a codex review", etc.
 - **PostToolUse hook** — after every successful `git commit` made via the Bash tool, Codex reviews the new commit. `[P1]`/`[P2]` findings block Claude and instruct it to fix and re-commit. Codex errors and timeouts do **not** block — only findings do.
-- **Stop hook** — keeps Claude iterating through the fix/re-commit cycle until the review passes, capped at `CODEX_REVIEW_MAX_LOOPS` iterations (default 5).
+- **Stop hook** — keeps Claude iterating through the fix/re-commit cycle until the review passes, capped at `CODEX_REVIEW_MAX_LOOPS` iterations (default 5). While the reviewed commit is unpushed, the loop folds fixes in with `git commit --amend`, so broken intermediate versions never survive in history.
+- **SessionStart hook** — warns at session start if reviews are not going to run (codex missing or unauthenticated, kill switch active). Silent when everything is healthy.
 
 > **Scope:** only commits that Claude itself makes via the Bash tool trigger the review. Commits you run in your own terminal (outside a Claude Code session) are not reviewed — the hook has no visibility into them. Use the `/codex-review` slash command or the skill to review those on demand.
 >
@@ -64,6 +66,18 @@ Claude Code's plan mode writes an implementation plan to `~/.claude/plans/<name>
 ```
 
 Unlike the commit review, this uses `codex exec` (ad-hoc prose review) rather than `codex exec review` (which is diff-oriented). No git state is required. Findings use the same `[P1]`/`[P2]`/`[P3]` priority scheme; `[P1]` / `[P2]` issues suggest revising the plan before implementation.
+
+## Waiving findings
+
+If you disagree with a finding (false positive, accepted trade-off), waive it instead of fighting the loop:
+
+```text
+/codex-review-waive            # one blocking finding -> waives it
+/codex-review-waive 2          # waive finding #2 from the last failed review
+/codex-review-waive all        # waive every blocking finding
+```
+
+Waivers live in `.git/codex-review-waived`, one normalized key per line (`#` comments allowed). They match on title with case, whitespace, and line numbers stripped, so a finding re-reported at a shifted line stays waived; a substantially re-worded finding needs waiving again. Waivers suppress *blocking only* — waived findings still appear in the history log marked `"waived": true`, and PASS/FAIL messages note how many findings were suppressed. Un-waive by editing or deleting lines from the file.
 
 ## Cost and latency
 
@@ -91,7 +105,8 @@ The hooks keep their working state inside the repo's `.git` directory — never 
 
 - `.git/codex-review-state` — current verdict (`RUNNING` / `FAIL` / `ERROR` / `TIMEOUT`) plus the commit SHA and a timestamp used for staleness detection
 - `.git/codex-review-loop-count` — fix-loop counter
-- `.git/codex-review-skip` — create this file to disable both hooks for the repo
+- `.git/codex-review-skip` — create this file to disable the hooks for the repo
+- `.git/codex-review-waived` — waived finding keys (see [Waiving findings](#waiving-findings))
 
 Stale state heals itself: the Stop hook clears a `FAIL` whose commit no longer matches HEAD or that is over an hour old, and clears `RUNNING` markers older than 10 minutes (fossils of a killed review).
 
@@ -105,7 +120,7 @@ Each entry contains:
 
 - `timestamp` (ISO-8601 UTC), `sha` / `short_sha`, `branch`, `author_name`, `author_email`
 - `verdict` — `PASS` / `FAIL` / `ERROR` / `TIMEOUT`
-- `findings[]` — structured `{priority, title}` per `[P1]`/`[P2]`/`[P3]` line Codex reported, `finding_count`, `blocking_count`
+- `findings[]` — structured `{priority, title, waive_key, waived}` per `[P1]`/`[P2]`/`[P3]` line Codex reported, plus `finding_count`, `blocking_count` (unwaived P1/P2 only), and `waived_count`
 - `review_prose` — the full Codex review text (truncated to 2000 chars)
 - `codex_exit`, `duration_seconds`, `plugin_version`
 
@@ -138,6 +153,7 @@ Under the hood, the post-commit hook invokes `codex exec review --json` and pars
 - **Review timed out** — Codex exceeded `CODEX_REVIEW_TIMEOUT` (280s). The commit is not blocked; the timeout is logged to the history file. Re-check with `/codex-review`, break the commit up, or raise the variable.
 - **Codex not found** — `command -v codex` returns empty. Install with `npm install -g @openai/codex`, or set `CODEX_BIN=/path/to/codex`.
 - **Codex auth failure on review** — run `codex login` or export `OPENAI_API_KEY`. Auth failures don't block commits; they're logged as `ERROR`.
+- **Review keeps blocking on a finding you disagree with** — `/codex-review-waive` suppresses it permanently for the repo (see Waiving findings). For a systematic false-positive pattern, file an issue with the verbatim Codex output.
 - **Review keeps failing on obviously clean commits** — file an issue with the verbatim Codex output. As a workaround, `touch .git/codex-review-skip`.
 - **Every review times out** — check for a misbehaving Codex MCP server. Run `codex exec review --json --commit HEAD --full-auto 2>/dev/null | jq -c 'select(((.type // "") + "/" + (.item.type // "")) | test("mcp"; "i"))'` — the filter scopes to event/item type fields (ignores prose or diff text that merely mentions MCP) and tolerates schema variation across Codex versions. Look for an event that starts but never completes. If you spot one, temporarily comment out the offending `[mcp_servers.<name>]` block in `~/.codex/config.toml` and retry.
 - **Reset review history** — `rm .git/codex-reviews.jsonl` in the affected repo.
@@ -152,6 +168,6 @@ Under the hood, the post-commit hook invokes `codex exec review --json` and pars
 If any stale state markers remain in projects you used the plugin in:
 
 ```
-rm -f .git/codex-review-state .git/codex-review-loop-count .git/codex-review-skip
+rm -f .git/codex-review-state .git/codex-review-loop-count .git/codex-review-skip .git/codex-review-waived
 rm -f .codex-review-state .codex-review-loop-count   # pre-1.4.0 locations
 ```

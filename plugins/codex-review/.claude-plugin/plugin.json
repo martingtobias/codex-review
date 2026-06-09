@@ -1,7 +1,7 @@
 {
   "name": "codex-review",
   "description": "Automatic post-commit code review using OpenAI Codex CLI. After every git commit, Codex reviews the changes and provides a PASS/FAIL verdict. On FAIL, Claude fixes issues and re-commits. On PASS, prompts to push to GitHub.",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "author": {
     "name": "Andrei"
   }

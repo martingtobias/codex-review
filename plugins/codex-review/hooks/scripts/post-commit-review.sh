@@ -47,18 +47,13 @@ TOOL_RESPONSE=$(printf '%s' "$INPUT" | jq -r '
     else "" end
 ')
 
-HAS_SUCCESS=false
-if printf '%s' "$TOOL_RESPONSE" | grep -qE 'files?[[:space:]]+changed'; then
-  HAS_SUCCESS=true
-elif printf '%s' "$TOOL_RESPONSE" | grep -qE '\[.+[[:space:]]+[0-9a-f]+\]'; then
-  HAS_SUCCESS=true
-fi
-
+# Fast negative gate only: an obviously failed commit never needs repo
+# resolution. Whether the commit actually SUCCEEDED is decided later from
+# git itself (HEAD freshness + history dedup), not by sniffing stdout prose
+# -- the old positive sniff ("N files changed") missed quiet commits
+# (git commit -q) and non-English locales, and false-positived on commands
+# like `git log --grep commit --stat`.
 if printf '%s' "$TOOL_RESPONSE" | grep -qE '^(error|fatal):|nothing to commit'; then
-  HAS_SUCCESS=false
-fi
-
-if [ "$HAS_SUCCESS" = "false" ]; then
   echo '{}'; exit 0
 fi
 
@@ -190,6 +185,27 @@ HISTORY_FILE="$GITDIR/codex-reviews.jsonl"
 # One-time migration: pre-1.4.0 releases kept state markers in the working
 # tree, where the fix loop could accidentally commit them.
 rm -f "$REPO_ROOT/.codex-review-state" "$REPO_ROOT/.codex-review-loop-count" 2>/dev/null || true
+
+# Positive gate: HEAD must have been committed just now. A just-made commit
+# (including --amend, which refreshes the committer date) always has a
+# committer timestamp within seconds of the hook firing; `git log`-ish
+# commands that slipped past the command regex never do.
+COMMIT_TS=$(git -C "$REPO_ROOT" log -1 --format=%ct HEAD 2>/dev/null || echo 0)
+case "$COMMIT_TS" in
+  ''|*[!0-9]*) COMMIT_TS=0 ;;
+esac
+NOW=$(date +%s)
+if [ "$COMMIT_TS" -eq 0 ] \
+   || [ $((NOW - COMMIT_TS)) -gt 15 ] || [ $((COMMIT_TS - NOW)) -gt 15 ]; then
+  echo '{}'; exit 0
+fi
+
+# Dedup: skip a sha that already has a history entry. Catches a failed
+# `git commit` seconds after a successful one (HEAD still fresh) and avoids
+# re-paying for a re-review of an identical commit.
+if [ -f "$HISTORY_FILE" ] && grep -qF "\"sha\":\"$HEAD_SHA\"" "$HISTORY_FILE" 2>/dev/null; then
+  echo '{}'; exit 0
+fi
 
 # Defaults so the EXIT trap (timeout path) has valid values to log with.
 START_TS=$(date +%s)

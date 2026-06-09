@@ -1,6 +1,6 @@
 ---
 description: Waive a disputed Codex review finding so it stops blocking commits
-argument-hint: [finding number | all | text snippet]
+argument-hint: "[finding number | all | text snippet]"
 allowed-tools: [Bash, Read]
 ---
 

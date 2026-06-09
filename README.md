@@ -1,5 +1,8 @@
 # codex-review
 
+[![CI](https://github.com/andreidavid/codex-review/actions/workflows/ci.yml/badge.svg)](https://github.com/andreidavid/codex-review/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 A Claude Code plugin that runs an automatic code review with OpenAI Codex CLI after every `git commit` made via the Bash tool. On `[P1]`/`[P2]` findings, Claude is blocked and asked to fix and re-commit; on a clean review, you're prompted to push.
 
 ## Prerequisites
@@ -61,7 +64,7 @@ Claude Code's plan mode writes an implementation plan to `~/.claude/plans/<name>
 /codex-review-plan
 
 # Review a specific file (absolute or relative path)
-/codex-review-plan /home/andrei/.claude/plans/my-plan.md
+/codex-review-plan ~/.claude/plans/my-plan.md
 /codex-review-plan my-plan.md          # resolves against ~/.claude/plans/
 ```
 

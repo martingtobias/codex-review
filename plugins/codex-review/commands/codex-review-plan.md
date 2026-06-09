@@ -1,6 +1,6 @@
 ---
 description: Run a Codex review on a Claude Code plan file
-argument-hint: [path-to-plan.md]
+argument-hint: "[path-to-plan.md]"
 allowed-tools: [Bash, Read]
 ---
 

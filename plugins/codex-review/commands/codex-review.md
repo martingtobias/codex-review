@@ -1,6 +1,6 @@
 ---
 description: Run a Codex code review on commits, branches, or uncommitted changes
-argument-hint: [--commit <sha>] [--uncommitted] [--base <branch>]
+argument-hint: "[--commit <sha>] [--uncommitted] [--base <branch>]"
 allowed-tools: [Bash, Read]
 ---
 

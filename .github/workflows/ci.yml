@@ -26,3 +26,9 @@ jobs:
 
       - name: Run hook tests
         run: npx --yes bats tests
+
+      - name: Validate plugin and marketplace manifests
+        if: runner.os == 'Linux'
+        run: |
+          npx --yes @anthropic-ai/claude-code plugin validate plugins/codex-review
+          npx --yes @anthropic-ai/claude-code plugin validate .

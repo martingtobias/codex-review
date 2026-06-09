@@ -2,6 +2,11 @@
 
 All notable changes to the `codex-review` plugin, newest first.
 
+## 1.5.1
+
+- **Fix command frontmatter that was silently dropped.** `argument-hint` values containing multiple bracket groups are invalid YAML; `/codex-review`'s frontmatter failed to parse, so its description, argument hint, and `allowed-tools` restriction were silently ignored (a bug present since 1.0.0, surfaced by `claude plugin validate`). All `argument-hint` values are now quoted.
+- **Open-source housekeeping:** MIT license, CONTRIBUTING.md, license/homepage/repository fields in `plugin.json`, marketplace description, README badges, and a CI step running `claude plugin validate` so frontmatter regressions are caught.
+
 ## 1.5.0
 
 - **Finding waivers.** New `/codex-review-waive` command suppresses a disputed finding per-repo: keys live in `.git/codex-review-waived`, matched on normalized title (case, whitespace, and line numbers stripped, so shifted-line re-reports stay waived). Waivers suppress blocking only — waived findings remain in the history log with `"waived": true`, `blocking_count` excludes them, a new `waived_count` field and message notes keep suppression visible, and each finding now carries its `waive_key` so the command can copy it verbatim.

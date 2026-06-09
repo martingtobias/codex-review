@@ -1,7 +1,8 @@
 {
   "name": "andreidavid",
+  "description": "Plugins by Andrei David — automatic Codex-powered code review for Claude Code.",
   "owner": {
-    "name": "Andrei",
+    "name": "Andrei David",
     "email": "andrei.david@gmail.com"
   },
   "plugins": [
@@ -9,7 +10,7 @@
       "name": "codex-review",
       "source": "./plugins/codex-review",
       "description": "Automatic post-commit code review using OpenAI Codex CLI.",
-      "version": "1.5.0"
+      "version": "1.5.1"
     }
   ]
 }

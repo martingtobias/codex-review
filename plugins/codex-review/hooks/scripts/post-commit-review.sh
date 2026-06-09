@@ -6,6 +6,13 @@ set -euo pipefail
 
 # --- Config (env overrides) ---
 : "${CODEX_REVIEW_MAX_OUTPUT:=8000}"
+# In-script review timeout, kept under the 300s harness hook timeout so the
+# script itself observes the kill and can record a TIMEOUT verdict (a harness
+# kill is a fatal signal: bash never runs the EXIT trap, state stays RUNNING).
+: "${CODEX_REVIEW_TIMEOUT:=280}"
+case "$CODEX_REVIEW_TIMEOUT" in
+  ''|*[!0-9]*) CODEX_REVIEW_TIMEOUT=280 ;;
+esac
 CODEX_BIN="${CODEX_BIN:-$(command -v codex || true)}"
 
 # --- Read input ---
@@ -227,11 +234,14 @@ append_history() {
     >> "$HISTORY_FILE" 2>/dev/null || true
 }
 
-# Mark in-flight so a kill (timeout) is distinguishable from a real FAIL/PASS.
-# On abnormal exit, downgrade state to TIMEOUT and log the event so the
-# history file faithfully records every outcome advertised in the README.
+# Mark in-flight so a kill is distinguishable from a real FAIL/PASS.
 # State format: "<VERDICT> <full-sha> <epoch>" -- the Stop hook uses the sha
 # and timestamp to detect and clear stale state.
+#
+# The EXIT trap is a backstop for script failures (set -e) only: it records
+# ERROR so a bug here is never mislabeled as a review timeout. It does NOT
+# fire on a harness kill -- bash skips EXIT traps on fatal signals -- which
+# is why the review itself runs under `timeout` below.
 echo "RUNNING $HEAD_SHA $START_TS" > "$STATE_FILE"
 trap '
   rc=$?
@@ -239,8 +249,8 @@ trap '
     s=$(cat "$STATE_FILE" 2>/dev/null || true)
     case "$s" in
       RUNNING*)
-        echo "TIMEOUT $HEAD_SHA $(date +%s)" > "$STATE_FILE"
-        append_history "TIMEOUT" 2>/dev/null || true
+        echo "ERROR $HEAD_SHA $(date +%s)" > "$STATE_FILE"
+        append_history "ERROR" 2>/dev/null || true
         ;;
     esac
   fi
@@ -262,12 +272,29 @@ trap '
 # read-only filesystems) contaminate the first line of the stream, which
 # defeats the JSONL_MODE probe and silently forces the fallback parser.
 STDERR_FILE=$(mktemp 2>/dev/null || echo "/tmp/codex-review-stderr.$$")
-REVIEW_JSONL=$(cd "$REPO_ROOT" && "$CODEX_BIN" exec review --json \
-  --commit "$HEAD_SHA" \
-  --full-auto \
-  2>"$STDERR_FILE") || REVIEW_EXIT=$?
+# Run under coreutils `timeout` when available (stock macOS lacks it) so the
+# script -- not the harness -- observes a hung review and can log TIMEOUT.
+TIMEOUT_BIN=$(command -v timeout || true)
+if [ -n "$TIMEOUT_BIN" ]; then
+  REVIEW_JSONL=$(cd "$REPO_ROOT" && "$TIMEOUT_BIN" "$CODEX_REVIEW_TIMEOUT" \
+    "$CODEX_BIN" exec review --json \
+    --commit "$HEAD_SHA" \
+    --full-auto \
+    2>"$STDERR_FILE") || REVIEW_EXIT=$?
+else
+  REVIEW_JSONL=$(cd "$REPO_ROOT" && "$CODEX_BIN" exec review --json \
+    --commit "$HEAD_SHA" \
+    --full-auto \
+    2>"$STDERR_FILE") || REVIEW_EXIT=$?
+fi
 REVIEW_STDERR=$(cat "$STDERR_FILE" 2>/dev/null || true)
 rm -f "$STDERR_FILE"
+
+# timeout(1) exits 124 (TERM) or 137 (KILL) when the limit is hit.
+IS_TIMEOUT=false
+if [ -n "$TIMEOUT_BIN" ] && { [ "$REVIEW_EXIT" -eq 124 ] || [ "$REVIEW_EXIT" -eq 137 ]; }; then
+  IS_TIMEOUT=true
+fi
 
 # Detect JSONL mode; older Codex CLIs may emit plain text even with --json.
 # Extract the first line via bash parameter expansion rather than `| head -1`:
@@ -282,7 +309,9 @@ if [ -n "$FIRST_LINE" ] && printf '%s' "$FIRST_LINE" | jq -e 'has("type")' >/dev
 fi
 
 REVIEW_PROSE=""
-if [ "$JSONL_MODE" = "true" ]; then
+if [ "$IS_TIMEOUT" = "true" ]; then
+  REVIEW_PROSE="(review timed out after ${CODEX_REVIEW_TIMEOUT}s)"
+elif [ "$JSONL_MODE" = "true" ]; then
   # Codex can emit several agent_message items (streaming partials + final).
   # Take the LAST one -- that's the authoritative final summary. Concatenating
   # them duplicates the review text in the prose surfaced back to Claude.
@@ -345,14 +374,23 @@ if [ ${#REVIEW_SUMMARY} -gt "$CODEX_REVIEW_MAX_OUTPUT" ]; then
 fi
 
 # --- Emit verdict ---
-if [ "$REVIEW_EXIT" -ne 0 ]; then
+# TIMEOUT and ERROR are infrastructure outcomes, not review findings: they
+# surface as non-blocking context. Only genuine [P1]/[P2] findings block.
+if [ "$IS_TIMEOUT" = "true" ]; then
+  echo "TIMEOUT $HEAD_SHA $(date +%s)" > "$STATE_FILE"
+  append_history "TIMEOUT"
+  jq -n \
+    --arg sha "$SHORT_SHA" \
+    --arg secs "$CODEX_REVIEW_TIMEOUT" \
+    '{"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": ("Codex review of commit " + $sha + " timed out after " + $secs + "s and was skipped. You are not blocked. Mention the timeout to the user; they can re-check with /codex-review (possibly on a smaller slice) or investigate a hung Codex MCP server (see plugin README troubleshooting).")}}'
+elif [ "$REVIEW_EXIT" -ne 0 ]; then
   echo "ERROR $HEAD_SHA $(date +%s)" > "$STATE_FILE"
   append_history "ERROR"
   jq -n \
     --arg sha "$SHORT_SHA" \
     --arg review "$REVIEW_SUMMARY" \
     --arg exit_code "$REVIEW_EXIT" \
-    '{"decision": "block", "reason": ("Codex review of commit " + $sha + " errored (exit code: " + $exit_code + ").\n\n" + $review + "\n\nReview the output above and decide whether to push or fix issues.")}'
+    '{"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": ("Codex review of commit " + $sha + " errored (exit code: " + $exit_code + ") and produced no verdict. You are not blocked.\n\n" + $review + "\n\nMention the error to the user -- likely a Codex auth or rate-limit issue.")}}'
 elif [ "$HAS_ISSUES" = "true" ]; then
   echo "FAIL $HEAD_SHA $(date +%s)" > "$STATE_FILE"
   append_history "FAIL"

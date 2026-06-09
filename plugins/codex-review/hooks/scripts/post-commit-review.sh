@@ -270,7 +270,8 @@ append_history() {
       author_name:$author_name, author_email:$author_email,
       verdict:$verdict,
       finding_count:($findings|length),
-      blocking_count:([$findings[] | select(.priority=="P1" or .priority=="P2")] | length),
+      blocking_count:([$findings[] | select((.priority=="P1" or .priority=="P2") and (.waived != true))] | length),
+      waived_count:([$findings[] | select(.waived == true)] | length),
       findings:$findings,
       review_prose:$prose,
       codex_exit:($codex_exit|tonumber),
@@ -390,28 +391,52 @@ else
   fi
 fi
 
-# Finding detection on the clean review prose. Line-anchored pattern rejects
-# prose mentions and rubric legend entries.
-HAS_ISSUES=false
-if [ "$REVIEW_EXIT" -eq 0 ]; then
-  if printf '%s\n' "$REVIEW_PROSE" \
-      | grep -qE '^[[:space:]]*([-*>][[:space:]]+)?\[P[12]\][[:space:]]+[^=[:space:]]'; then
-    HAS_ISSUES=true
-  fi
-fi
-
-# Extract structured findings (priority + verbatim title-line) for the history
-# log. Title retains the " — file:line" suffix as emitted by Codex; callers
-# can parse further if they want. Missing-match lines are filtered by grep.
-# Same [^=[:space:]] tail as the HAS_ISSUES pattern: rubric legend lines
-# ("[P1] = critical") must not count as findings, or blocking_count could
-# read >0 on a PASS verdict.
+# Extract structured findings (priority + verbatim title-line). Title retains
+# the " — file:line" suffix as emitted by Codex. The [^=[:space:]] tail
+# rejects rubric legend lines ("[P1] = critical") so they never count as
+# findings. Line-anchored, so prose mentions don't match either.
 FINDINGS_JSON=$(printf '%s\n' "$REVIEW_PROSE" \
   | grep -E '^[[:space:]]*([-*>][[:space:]]+)?\[P[123]\][[:space:]]+[^=[:space:]]' \
   | jq -Rn '[inputs | capture("^[[:space:]]*([-*>][[:space:]]+)?\\[(?<priority>P[123])\\][[:space:]]+(?<title>[^=[:space:]].*)$")]' \
   2>/dev/null || true)
 if ! printf '%s' "$FINDINGS_JSON" | jq -e . >/dev/null 2>&1; then
   FINDINGS_JSON="[]"
+fi
+
+# Annotate each finding with a normalized waive key and whether the user has
+# waived it (via /codex-review-waive -> $GITDIR/codex-review-waived, one key
+# per line, #-comments allowed). The key strips line numbers -- which shift
+# between reviews -- plus case and whitespace, so a re-reported finding still
+# matches its waiver. Waivers suppress blocking, not logging: waived findings
+# stay in the history with "waived": true.
+WAIVE_FILE="$GITDIR/codex-review-waived"
+WAIVED_KEYS="[]"
+if [ -f "$WAIVE_FILE" ]; then
+  WAIVED_KEYS=$(grep -vE '^[[:space:]]*(#|$)' "$WAIVE_FILE" 2>/dev/null \
+    | jq -Rn '[inputs]' 2>/dev/null) || WAIVED_KEYS="[]"
+  if ! printf '%s' "$WAIVED_KEYS" | jq -e . >/dev/null 2>&1; then
+    WAIVED_KEYS="[]"
+  fi
+fi
+FINDINGS_JSON=$(printf '%s' "$FINDINGS_JSON" | jq --argjson waived "$WAIVED_KEYS" '
+  def wkey: ascii_downcase
+    | gsub(":[0-9]+(-[0-9]+)?"; "")
+    | gsub("[[:space:]]+"; " ")
+    | sub("^ "; "") | sub(" $"; "");
+  map(. + {waive_key: (.title | wkey)}
+    | . + {waived: (.waive_key as $k | $waived | index($k) != null)})' \
+  2>/dev/null) || FINDINGS_JSON="[]"
+
+# Blocking = unwaived P1/P2. Only evaluated on exit-zero output.
+BLOCKING_COUNT=$(printf '%s' "$FINDINGS_JSON" \
+  | jq '[.[] | select((.priority=="P1" or .priority=="P2") and (.waived | not))] | length' \
+  2>/dev/null) || BLOCKING_COUNT=0
+WAIVED_BLOCKING=$(printf '%s' "$FINDINGS_JSON" \
+  | jq '[.[] | select((.priority=="P1" or .priority=="P2") and .waived)] | length' \
+  2>/dev/null) || WAIVED_BLOCKING=0
+HAS_ISSUES=false
+if [ "$REVIEW_EXIT" -eq 0 ] && [ "${BLOCKING_COUNT:-0}" -gt 0 ]; then
+  HAS_ISSUES=true
 fi
 
 # Display text for Claude: the prose itself, tail-preserving truncation when
@@ -446,17 +471,27 @@ elif [ "$REVIEW_EXIT" -ne 0 ]; then
 elif [ "$HAS_ISSUES" = "true" ]; then
   echo "FAIL $HEAD_SHA $(date +%s)" > "$STATE_FILE"
   append_history "FAIL"
+  WAIVE_NOTE=""
+  if [ "${WAIVED_BLOCKING:-0}" -gt 0 ]; then
+    WAIVE_NOTE=" ($WAIVED_BLOCKING additional waived finding(s) suppressed; see $WAIVE_FILE)"
+  fi
   jq -n \
     --arg sha "$SHORT_SHA" \
     --arg review "$REVIEW_SUMMARY" \
-    '{"decision": "block", "reason": ("Codex review of commit " + $sha + " found issues:\n\n" + $review + "\n\nFix the issues identified above, then create a new commit. Do NOT re-run the codex review yourself -- this hook will trigger it automatically on your next commit. Do NOT push to GitHub until the review passes.")}'
+    --arg waive_note "$WAIVE_NOTE" \
+    '{"decision": "block", "reason": ("Codex review of commit " + $sha + " found issues:" + $waive_note + "\n\n" + $review + "\n\nFix the issues identified above, then create a new commit. Do NOT re-run the codex review yourself -- this hook will trigger it automatically on your next commit. Do NOT push to GitHub until the review passes. If the user disagrees with a finding, they can suppress it with /codex-review-waive.")}'
 else
   rm -f "$STATE_FILE" "$LOOP_COUNTER"
   append_history "PASS"
+  PASS_NOTE="no issues found"
+  if [ "${WAIVED_BLOCKING:-0}" -gt 0 ]; then
+    PASS_NOTE="$WAIVED_BLOCKING blocking finding(s) suppressed by waivers in $WAIVE_FILE"
+  fi
   jq -n \
     --arg sha "$SHORT_SHA" \
     --arg review "$REVIEW_SUMMARY" \
-    '{"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": ("Codex review of commit " + $sha + " passed (no issues found).\n\n" + $review + "\n\nThe code looks good. Ask the user if they want to push to GitHub.")}}'
+    --arg note "$PASS_NOTE" \
+    '{"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": ("Codex review of commit " + $sha + " passed (" + $note + ").\n\n" + $review + "\n\nThe code looks good. Ask the user if they want to push to GitHub.")}}'
 fi
 
 # Clear the trap; we emitted a verdict cleanly.

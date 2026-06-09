@@ -35,6 +35,10 @@ case "${CODEX_STUB_MODE:-pass}" in
     echo '{"type":"thread.started"}'
     printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"Found problems.\n\n- [P1] Null deref — src/a.c:3\n- [P3] Naming nit — src/b.c:9"}}'
     ;;
+  fail_two)
+    echo '{"type":"thread.started"}'
+    printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"Found problems.\n\n- [P1] Null deref — src/a.c:3\n- [P2] Off-by-one — src/c.c:14-15"}}'
+    ;;
   legend_only)
     printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"Rubric:\n[P1] = critical\n[P2] = important\nNo issues found."}}'
     ;;

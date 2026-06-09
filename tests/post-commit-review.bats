@@ -147,6 +147,49 @@ teardown() { teardown_repo; }
   [ "$(jq -r '.plugin_version' "$(history_file)")" = "$manifest_ver" ]
 }
 
+@test "waived blocking finding does not block; logged with waived:true" {
+  echo 'null deref — src/a.c' > "$REPO/.git/codex-review-waived"
+  out=$(hook_input "git commit -m initial" "" | CODEX_STUB_MODE=fail run_post_hook)
+  [ "$(echo "$out" | jq -r '.decision // empty')" = "" ]
+  [[ $(echo "$out" | jq -r '.hookSpecificOutput.additionalContext') == *"suppressed by waivers"* ]]
+  line=$(tail -1 "$(history_file)")
+  [ "$(echo "$line" | jq -r '.verdict')" = "PASS" ]
+  [ "$(echo "$line" | jq -r '.blocking_count')" = "0" ]
+  [ "$(echo "$line" | jq -r '.waived_count')" = "1" ]
+  [ "$(echo "$line" | jq -r '.findings[] | select(.priority=="P1") | .waived')" = "true" ]
+}
+
+@test "waiver matches across shifted line numbers (key strips them)" {
+  # fail_two reports src/c.c:14-15; the key has no line numbers
+  echo 'off-by-one — src/c.c' > "$REPO/.git/codex-review-waived"
+  echo 'null deref — src/a.c' >> "$REPO/.git/codex-review-waived"
+  out=$(hook_input "git commit -m initial" "" | CODEX_STUB_MODE=fail_two run_post_hook)
+  [ "$(echo "$out" | jq -r '.decision // empty')" = "" ]
+  [ "$(jq -r '.waived_count' "$(history_file)")" = "2" ]
+}
+
+@test "partial waiver still blocks on the remaining finding" {
+  echo 'null deref — src/a.c' > "$REPO/.git/codex-review-waived"
+  out=$(hook_input "git commit -m initial" "" | CODEX_STUB_MODE=fail_two run_post_hook)
+  [ "$(echo "$out" | jq -r '.decision')" = "block" ]
+  [[ $(echo "$out" | jq -r '.reason') == *"1 additional waived finding(s) suppressed"* ]]
+  line=$(tail -1 "$(history_file)")
+  [ "$(echo "$line" | jq -r '.blocking_count')" = "1" ]
+  [ "$(echo "$line" | jq -r '.waived_count')" = "1" ]
+}
+
+@test "comments and blank lines in the waive file are ignored" {
+  printf '# accepted 2026-06-09\n\nnull deref — src/a.c\n' > "$REPO/.git/codex-review-waived"
+  out=$(hook_input "git commit -m initial" "" | CODEX_STUB_MODE=fail run_post_hook)
+  [ "$(echo "$out" | jq -r '.decision // empty')" = "" ]
+}
+
+@test "findings carry a waive_key in the history log" {
+  hook_input "git commit -m initial" "" | CODEX_STUB_MODE=fail run_post_hook > /dev/null
+  key=$(jq -r '.findings[] | select(.priority=="P1") | .waive_key' "$(history_file)")
+  [ "$key" = "null deref — src/a.c" ]
+}
+
 @test "PASS clears state and loop counter" {
   echo "FAIL deadbeef 123" > "$(state_file)"
   echo "3" > "$(counter_file)"

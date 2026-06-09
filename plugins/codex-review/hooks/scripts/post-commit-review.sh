@@ -4,8 +4,12 @@
 # review on HEAD and return a verdict back to Claude.
 set -euo pipefail
 
-# --- Config (env overrides) ---
+# --- Config (env overrides; numeric knobs fall back to defaults on garbage
+# so a bad value can't trip set -e mid-script) ---
 : "${CODEX_REVIEW_MAX_OUTPUT:=8000}"
+case "$CODEX_REVIEW_MAX_OUTPUT" in
+  ''|*[!0-9]*) CODEX_REVIEW_MAX_OUTPUT=8000 ;;
+esac
 # In-script review timeout, kept under the 300s harness hook timeout so the
 # script itself observes the kill and can record a TIMEOUT verdict (a harness
 # kill is a fatal signal: bash never runs the EXIT trap, state stays RUNNING).
@@ -34,7 +38,9 @@ fi
 
 # Broad match: any `git ... commit` token in the command, including env-prefixed
 # forms (`GIT_AUTHOR_NAME=x git commit`, `sudo git commit`, `env FOO=1 git commit`).
-if ! printf '%s' "$COMMAND" | grep -qE '\bgit\b[^;&|]*\bcommit\b'; then
+# POSIX-class boundaries instead of \b, which BSD grep (macOS) doesn't support.
+if ! printf '%s' "$COMMAND" \
+    | grep -qE '(^|[^[:alnum:]_])git([[:space:]][^;&|]*)?[[:space:]]commit([^[:alnum:]_]|$)'; then
   echo '{}'; exit 0
 fi
 
@@ -115,21 +121,39 @@ COMMAND_SEGMENTED=$(printf '%s' "$COMMAND" | awk '
 COMMIT_LINE=$(printf '%s\n' "$COMMAND_SEGMENTED" | awk '
   /^[[:space:]]*([^[:space:];&|]+[[:space:]]+)*\(?([^[:space:];&|]*\/)?git([[:space:]]+[^[:space:];&|]+)*[[:space:]]+commit([[:space:]]|$)/ { print NR; exit }
 ')
+COMMIT_SEGMENT=""
+if [ -n "$COMMIT_LINE" ]; then
+  COMMIT_SEGMENT=$(printf '%s\n' "$COMMAND_SEGMENTED" | awk -v n="$COMMIT_LINE" 'NR == n')
+fi
 if [ -n "$COMMIT_LINE" ] && [ "$COMMIT_LINE" -gt 1 ]; then
   COMMAND_PREFIX=$(printf '%s\n' "$COMMAND_SEGMENTED" | awk -v n="$COMMIT_LINE" 'NR < n')
 else
   COMMAND_PREFIX=""
 fi
 
-CD_RAW=$(printf '%s' "$COMMAND_PREFIX" \
-  | grep -oE "\\bcd[[:space:]]+(\"[^\"]+\"|'[^']+'|[^[:space:];&|]+)" \
-  | tail -1 || true)
-CD_DIR=""
-if [ -n "$CD_RAW" ]; then
-  CD_DIR=$(printf '%s' "$CD_RAW" | sed -E "s/^cd[[:space:]]+//; s/^\"(.*)\"$/\\1/; s/^'(.*)'$/\\1/")
-fi
+# Apply every `cd` in the prefix cumulatively (absolute paths reset, relative
+# ones append) so chains like `cd a && cd b && git commit` resolve to a/b.
+# The match is anchored to the segment start, so `echo cd /x` is not a cd.
+CANDIDATE_DIR="$SESSION_CWD"
+while IFS= read -r SEG; do
+  [ -n "$SEG" ] || continue
+  CD_RAW=$(printf '%s' "$SEG" \
+    | grep -oE "^[[:space:]]*cd[[:space:]]+(\"[^\"]+\"|'[^']+'|[^[:space:];&|]+)" \
+    || true)
+  [ -n "$CD_RAW" ] || continue
+  CD_DIR=$(printf '%s' "$CD_RAW" | sed -E "s/^[[:space:]]*cd[[:space:]]+//; s/^\"(.*)\"$/\\1/; s/^'(.*)'$/\\1/")
+  case "$CD_DIR" in
+    /*)        CANDIDATE_DIR="$CD_DIR" ;;
+    '~')       CANDIDATE_DIR="$HOME" ;;
+    '~/'*)     CANDIDATE_DIR="$HOME/${CD_DIR#\~/}" ;;
+    *)         CANDIDATE_DIR="$CANDIDATE_DIR/$CD_DIR" ;;
+  esac
+done <<<"$COMMAND_PREFIX"
 
-GIT_C_RAW=$(printf '%s' "$COMMAND" \
+# `git -C` is extracted from the commit segment only -- a `-C` on some other
+# command in the same line (`git -C /other log; git commit`) must not
+# redirect the review to the wrong repo.
+GIT_C_RAW=$(printf '%s' "${COMMIT_SEGMENT:-$COMMAND}" \
   | grep -oE "git[[:space:]]+-C[[:space:]]+(\"[^\"]+\"|'[^']+'|[^[:space:];&|]+)" \
   | tail -1 || true)
 GIT_C_DIR=""
@@ -137,13 +161,6 @@ if [ -n "$GIT_C_RAW" ]; then
   GIT_C_DIR=$(printf '%s' "$GIT_C_RAW" | sed -E "s/^git[[:space:]]+-C[[:space:]]+//; s/^\"(.*)\"$/\\1/; s/^'(.*)'$/\\1/")
 fi
 
-CANDIDATE_DIR="$SESSION_CWD"
-if [ -n "$CD_DIR" ]; then
-  case "$CD_DIR" in
-    /*) CANDIDATE_DIR="$CD_DIR" ;;
-    *)  CANDIDATE_DIR="$SESSION_CWD/$CD_DIR" ;;
-  esac
-fi
 if [ -n "$GIT_C_DIR" ]; then
   case "$GIT_C_DIR" in
     /*) CANDIDATE_DIR="$GIT_C_DIR" ;;
@@ -182,6 +199,12 @@ STATE_FILE="$GITDIR/codex-review-state"
 LOOP_COUNTER="$GITDIR/codex-review-loop-count"
 HISTORY_FILE="$GITDIR/codex-reviews.jsonl"
 
+# File-based kill switch (works mid-session, unlike the env var, which hooks
+# only inherit from Claude Code's launch environment).
+if [ -e "$GITDIR/codex-review-skip" ]; then
+  echo '{}'; exit 0
+fi
+
 # One-time migration: pre-1.4.0 releases kept state markers in the working
 # tree, where the fix loop could accidentally commit them.
 rm -f "$REPO_ROOT/.codex-review-state" "$REPO_ROOT/.codex-review-loop-count" 2>/dev/null || true
@@ -206,6 +229,11 @@ fi
 if [ -f "$HISTORY_FILE" ] && grep -qF "\"sha\":\"$HEAD_SHA\"" "$HISTORY_FILE" 2>/dev/null; then
   echo '{}'; exit 0
 fi
+
+# Plugin version for history entries, read from the manifest so it can't
+# drift from plugin.json again.
+PLUGIN_MANIFEST="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}/.claude-plugin/plugin.json"
+PLUGIN_VERSION=$(jq -r '.version // "unknown"' "$PLUGIN_MANIFEST" 2>/dev/null || echo "unknown")
 
 # Defaults so the EXIT trap (timeout path) has valid values to log with.
 START_TS=$(date +%s)
@@ -236,7 +264,7 @@ append_history() {
     --arg prose "$prose_log" \
     --arg codex_exit "$REVIEW_EXIT" \
     --arg duration "$duration" \
-    --arg ver "1.2.0" \
+    --arg ver "$PLUGIN_VERSION" \
     '{timestamp:$ts, sha:$sha, short_sha:$short, branch:$branch,
       author_name:$author_name, author_email:$author_email,
       verdict:$verdict,
@@ -334,14 +362,17 @@ elif [ "$JSONL_MODE" = "true" ]; then
   #
   # Use per-line `try fromjson catch empty` so a single malformed/trailing
   # line in the stream doesn't abort parsing and mask earlier findings the
-  # way `jq -s` (slurp) would. Base64-encode each match so embedded newlines
-  # survive the `tail -n 1` that picks the last match.
-  LAST_ENCODED=$(printf '%s\n' "$REVIEW_JSONL" \
-    | jq -rR 'try (fromjson | select(.type=="item.completed" and .item.type=="agent_message") | .item.text | @base64) catch empty' \
+  # way `jq -s` (slurp) would. Each match is emitted as a single-line JSON
+  # string literal (-c without -r) so embedded newlines survive the
+  # `tail -n 1` that picks the last match, then decoded back to raw text
+  # with a second jq pass -- a pure-jq round-trip, since base64(1) decode
+  # flags differ across GNU/macOS.
+  LAST_MESSAGE_JSON=$(printf '%s\n' "$REVIEW_JSONL" \
+    | jq -cR 'try (fromjson | select(.type=="item.completed" and .item.type=="agent_message") | .item.text) catch empty' \
     2>/dev/null \
     | tail -n 1)
-  if [ -n "$LAST_ENCODED" ]; then
-    REVIEW_PROSE=$(printf '%s' "$LAST_ENCODED" | base64 -d 2>/dev/null || true)
+  if [ -n "$LAST_MESSAGE_JSON" ]; then
+    REVIEW_PROSE=$(printf '%s' "$LAST_MESSAGE_JSON" | jq -r '.' 2>/dev/null || true)
   fi
   if [ -z "$REVIEW_PROSE" ]; then
     REVIEW_PROSE="(Codex produced no agent_message; stderr: ${REVIEW_STDERR:-<empty>})"
@@ -370,9 +401,12 @@ fi
 # Extract structured findings (priority + verbatim title-line) for the history
 # log. Title retains the " — file:line" suffix as emitted by Codex; callers
 # can parse further if they want. Missing-match lines are filtered by grep.
+# Same [^=[:space:]] tail as the HAS_ISSUES pattern: rubric legend lines
+# ("[P1] = critical") must not count as findings, or blocking_count could
+# read >0 on a PASS verdict.
 FINDINGS_JSON=$(printf '%s\n' "$REVIEW_PROSE" \
-  | grep -E '^[[:space:]]*([-*>][[:space:]]+)?\[P[123]\][[:space:]]+' \
-  | jq -Rn '[inputs | capture("^[[:space:]]*([-*>][[:space:]]+)?\\[(?<priority>P[123])\\][[:space:]]+(?<title>.*)$")]' \
+  | grep -E '^[[:space:]]*([-*>][[:space:]]+)?\[P[123]\][[:space:]]+[^=[:space:]]' \
+  | jq -Rn '[inputs | capture("^[[:space:]]*([-*>][[:space:]]+)?\\[(?<priority>P[123])\\][[:space:]]+(?<title>[^=[:space:]].*)$")]' \
   2>/dev/null || true)
 if ! printf '%s' "$FINDINGS_JSON" | jq -e . >/dev/null 2>&1; then
   FINDINGS_JSON="[]"

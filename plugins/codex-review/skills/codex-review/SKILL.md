@@ -1,7 +1,7 @@
 ---
 name: codex-review
 description: Use when the user asks to "review code with codex", "run a codex review", "review my changes", "review this commit", "review my branch", or wants OpenAI Codex to review code changes. Provides automated code review using the Codex CLI.
-tools: Bash, Read
+allowed-tools: Bash, Read
 ---
 
 # Codex Code Review

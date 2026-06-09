@@ -81,7 +81,7 @@ Waivers live in `.git/codex-review-waived`, one normalized key per line (`#` com
 
 ## Cost and latency
 
-Each triggered review is one Codex API call billed to your OpenAI account. The Stop-hook fix loop can run up to `CODEX_REVIEW_MAX_LOOPS` reviews per blocked session (default 5). Reviews run under a 280-second timeout (`CODEX_REVIEW_TIMEOUT`); a review that exceeds it is recorded as `TIMEOUT` and does **not** block — use `/codex-review` on smaller slices for very large commits.
+Each triggered review is one Codex API call billed to your OpenAI account. The Stop-hook fix loop can run up to `CODEX_REVIEW_MAX_LOOPS` reviews per blocked session (default 5). Reviews run under a 600-second timeout (`CODEX_REVIEW_TIMEOUT`, raisable up to the 900s hook ceiling); a review that exceeds it is recorded as `TIMEOUT` and does **not** block — use `/codex-review` on smaller slices for very large commits.
 
 If you're about to do a run of experimental or throwaway commits, bypass the plugin with `touch .git/codex-review-skip` in the repo (delete the file to re-enable). Setting `CODEX_REVIEW_SKIP=1` does the same, but only if exported **before launching Claude Code** — hooks inherit the launch environment, so exporting it mid-session has no effect.
 
@@ -93,7 +93,7 @@ Environment variables:
 |---|---|---|
 | `CODEX_REVIEW_SKIP` | *unset* | If set to any non-empty value **at Claude Code launch**, both hooks no-op. For a mid-session switch, use the kill-switch file below. |
 | `CODEX_REVIEW_MAX_LOOPS` | `5` | Max iterations of the fix-and-recommit loop before the Stop hook lets Claude end the turn. |
-| `CODEX_REVIEW_TIMEOUT` | `280` | Seconds before an in-flight review is killed and recorded as `TIMEOUT` (non-blocking). Kept under the 300s hook timeout so the script observes the kill itself. |
+| `CODEX_REVIEW_TIMEOUT` | `600` | Seconds before an in-flight review is killed and recorded as `TIMEOUT` (non-blocking). Must stay under the 900s hook ceiling in `hooks.json` so the script observes the kill itself. |
 | `CODEX_BIN` | `$(command -v codex)` | Override path to the Codex binary. |
 | `CODEX_REVIEW_MAX_OUTPUT` | `8000` | Max characters of review output surfaced back to Claude. |
 
@@ -150,7 +150,7 @@ Under the hood, the post-commit hook invokes `codex exec review --json` and pars
 ## Troubleshooting
 
 - **Stuck in a fix loop / Stop hook keeps blocking** — interrupt Claude (Ctrl-C), then `rm -f .git/codex-review-state .git/codex-review-loop-count` in the repo, or `touch .git/codex-review-skip`. (Stale state from an abandoned loop also clears itself: see State files.)
-- **Review timed out** — Codex exceeded `CODEX_REVIEW_TIMEOUT` (280s). The commit is not blocked; the timeout is logged to the history file. Re-check with `/codex-review`, break the commit up, or raise the variable.
+- **Review timed out** — Codex exceeded `CODEX_REVIEW_TIMEOUT` (600s). The commit is not blocked; the timeout is logged to the history file. Re-check with `/codex-review`, break the commit up, or raise the variable (up to the 900s hook ceiling).
 - **Codex not found** — `command -v codex` returns empty. Install with `npm install -g @openai/codex`, or set `CODEX_BIN=/path/to/codex`.
 - **Codex auth failure on review** — run `codex login` or export `OPENAI_API_KEY`. Auth failures don't block commits; they're logged as `ERROR`.
 - **Review keeps blocking on a finding you disagree with** — `/codex-review-waive` suppresses it permanently for the repo (see Waiving findings). For a systematic false-positive pattern, file an issue with the verbatim Codex output.

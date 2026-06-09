@@ -10,12 +10,14 @@ set -euo pipefail
 case "$CODEX_REVIEW_MAX_OUTPUT" in
   ''|*[!0-9]*) CODEX_REVIEW_MAX_OUTPUT=8000 ;;
 esac
-# In-script review timeout, kept under the 300s harness hook timeout so the
-# script itself observes the kill and can record a TIMEOUT verdict (a harness
-# kill is a fatal signal: bash never runs the EXIT trap, state stays RUNNING).
-: "${CODEX_REVIEW_TIMEOUT:=280}"
+# In-script review timeout. Must stay under the 900s harness hook timeout in
+# hooks.json so the script itself observes the kill and can record a TIMEOUT
+# verdict (a harness kill is a fatal signal: bash never runs the EXIT trap,
+# state stays RUNNING). Default sized at ~4x an observed legitimate review of
+# a small commit; reviews investigate the repo, not just the diff.
+: "${CODEX_REVIEW_TIMEOUT:=600}"
 case "$CODEX_REVIEW_TIMEOUT" in
-  ''|*[!0-9]*) CODEX_REVIEW_TIMEOUT=280 ;;
+  ''|*[!0-9]*) CODEX_REVIEW_TIMEOUT=600 ;;
 esac
 CODEX_BIN="${CODEX_BIN:-$(command -v codex || true)}"
 

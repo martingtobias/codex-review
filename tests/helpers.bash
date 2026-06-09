@@ -26,6 +26,9 @@ teardown_repo() {
 write_stub() {
   cat > "$STUB_DIR/codex" <<'STUB'
 #!/usr/bin/env bash
+if [ "${1:-}" = "login" ]; then
+  exit "${CODEX_STUB_LOGIN_EXIT:-0}"
+fi
 case "${CODEX_STUB_MODE:-pass}" in
   pass)
     echo '{"type":"thread.started"}'

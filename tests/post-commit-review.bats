@@ -190,6 +190,17 @@ teardown() { teardown_repo; }
   [ "$key" = "null deref — src/a.c" ]
 }
 
+@test "oversized CODEX_REVIEW_TIMEOUT is clamped below the hook ceiling" {
+  command -v timeout >/dev/null || skip "coreutils timeout not available"
+  start=$(date +%s)
+  out=$(hook_input "git commit -m initial" "" \
+    | CODEX_STUB_MODE=hang CODEX_REVIEW_TIMEOUT=9999 CODEX_REVIEW_HOOK_CEILING=23 run_post_hook)
+  elapsed=$(( $(date +%s) - start ))
+  [ "$elapsed" -lt 20 ]
+  [[ $(echo "$out" | jq -r '.hookSpecificOutput.additionalContext') == *"timed out after 3s"* ]]
+  [ "$(jq -r '.verdict' "$(history_file)")" = "TIMEOUT" ]
+}
+
 @test "unpushed FAIL advises amending the reviewed commit" {
   out=$(hook_input "git commit -m initial" "" | CODEX_STUB_MODE=fail run_post_hook)
   [[ $(echo "$out" | jq -r '.reason') == *"git commit --amend"* ]]

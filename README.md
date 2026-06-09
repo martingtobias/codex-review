@@ -93,7 +93,7 @@ Environment variables:
 |---|---|---|
 | `CODEX_REVIEW_SKIP` | *unset* | If set to any non-empty value **at Claude Code launch**, both hooks no-op. For a mid-session switch, use the kill-switch file below. |
 | `CODEX_REVIEW_MAX_LOOPS` | `5` | Max iterations of the fix-and-recommit loop before the Stop hook lets Claude end the turn. |
-| `CODEX_REVIEW_TIMEOUT` | `600` | Seconds before an in-flight review is killed and recorded as `TIMEOUT` (non-blocking). Must stay under the 900s hook ceiling in `hooks.json` so the script observes the kill itself. |
+| `CODEX_REVIEW_TIMEOUT` | `600` | Seconds before an in-flight review is killed and recorded as `TIMEOUT` (non-blocking). Values above 880 are clamped to keep headroom under the 900s hook ceiling in `hooks.json`, so the script always observes the kill itself. |
 | `CODEX_BIN` | `$(command -v codex)` | Override path to the Codex binary. |
 | `CODEX_REVIEW_MAX_OUTPUT` | `8000` | Max characters of review output surfaced back to Claude. |
 

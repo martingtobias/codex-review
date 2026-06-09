@@ -19,6 +19,20 @@ esac
 case "$CODEX_REVIEW_TIMEOUT" in
   ''|*[!0-9]*) CODEX_REVIEW_TIMEOUT=600 ;;
 esac
+# Clamp user values below the harness ceiling, keeping headroom to parse
+# output and write the verdict/history before the harness kills the hook.
+# The ceiling mirrors hooks.json; the env override exists for tests.
+HOOK_CEILING="${CODEX_REVIEW_HOOK_CEILING:-900}"
+case "$HOOK_CEILING" in
+  ''|*[!0-9]*) HOOK_CEILING=900 ;;
+esac
+MAX_TIMEOUT=$((HOOK_CEILING - 20))
+if [ "$MAX_TIMEOUT" -lt 1 ]; then
+  MAX_TIMEOUT=1
+fi
+if [ "$CODEX_REVIEW_TIMEOUT" -gt "$MAX_TIMEOUT" ]; then
+  CODEX_REVIEW_TIMEOUT=$MAX_TIMEOUT
+fi
 CODEX_BIN="${CODEX_BIN:-$(command -v codex || true)}"
 
 # --- Read input ---

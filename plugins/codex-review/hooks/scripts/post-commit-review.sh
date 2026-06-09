@@ -142,6 +142,7 @@ while IFS= read -r SEG; do
     || true)
   [ -n "$CD_RAW" ] || continue
   CD_DIR=$(printf '%s' "$CD_RAW" | sed -E "s/^[[:space:]]*cd[[:space:]]+//; s/^\"(.*)\"$/\\1/; s/^'(.*)'$/\\1/")
+  # shellcheck disable=SC2088  # matching a literal ~ in the cd argument
   case "$CD_DIR" in
     /*)        CANDIDATE_DIR="$CD_DIR" ;;
     '~')       CANDIDATE_DIR="$HOME" ;;
@@ -287,6 +288,7 @@ append_history() {
 # fire on a harness kill -- bash skips EXIT traps on fatal signals -- which
 # is why the review itself runs under `timeout` below.
 echo "RUNNING $HEAD_SHA $START_TS" > "$STATE_FILE"
+# shellcheck disable=SC2154  # rc/s are assigned inside the trap at fire time
 trap '
   rc=$?
   if [ "$rc" -ne 0 ] && [ -f "$STATE_FILE" ]; then

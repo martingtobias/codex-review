@@ -35,13 +35,13 @@ fi
 
 REPO_ROOT=""
 if [ -d "$CWD" ]; then
-  REPO_ROOT=$(cd "$CWD" && git rev-parse --show-toplevel 2>/dev/null || true)
+  REPO_ROOT=$(cd "$CWD" 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null) || REPO_ROOT=""
 fi
 if [ -z "$REPO_ROOT" ]; then
   echo '{}'; exit 0
 fi
 
-GITDIR=$(cd "$REPO_ROOT" && git rev-parse --git-common-dir 2>/dev/null || true)
+GITDIR=$(cd "$REPO_ROOT" 2>/dev/null && git rev-parse --git-common-dir 2>/dev/null) || GITDIR=""
 if [ -z "$GITDIR" ]; then
   GITDIR="$REPO_ROOT/.git"
 elif [ "${GITDIR#/}" = "$GITDIR" ]; then

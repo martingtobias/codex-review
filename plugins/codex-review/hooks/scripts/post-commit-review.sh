@@ -171,7 +171,7 @@ fi
 
 REPO_ROOT=""
 if [ -d "$CANDIDATE_DIR" ]; then
-  REPO_ROOT=$(cd "$CANDIDATE_DIR" && git rev-parse --show-toplevel 2>/dev/null || true)
+  REPO_ROOT=$(cd "$CANDIDATE_DIR" 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null) || REPO_ROOT=""
 fi
 if [ -z "$REPO_ROOT" ]; then
   echo '{}'; exit 0
@@ -188,7 +188,7 @@ SHORT_SHA=$(printf '%s' "$HEAD_SHA" | cut -c1-8)
 # correctly. State lives inside the git dir -- never in the working tree --
 # so the fix loop can't stage it with `git add -A` and no per-project
 # .gitignore edit is needed.
-GITDIR=$(cd "$REPO_ROOT" && git rev-parse --git-common-dir 2>/dev/null || true)
+GITDIR=$(cd "$REPO_ROOT" 2>/dev/null && git rev-parse --git-common-dir 2>/dev/null) || GITDIR=""
 if [ -z "$GITDIR" ]; then
   GITDIR="$REPO_ROOT/.git"
 elif [ "${GITDIR#/}" = "$GITDIR" ]; then

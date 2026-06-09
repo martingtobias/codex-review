@@ -114,7 +114,7 @@ case "${VERDICT:-}" in
       exit 0
     fi
 
-    jq -n '{"decision": "block", "reason": "Codex review found issues that need fixing. Fix the issues identified in the review and create a new commit. Do NOT re-run the codex review yourself -- the post-commit hook will trigger it automatically when you commit. Do NOT stop until the review passes."}'
+    jq -n '{"decision": "block", "reason": "Codex review found issues that need fixing. Fix the issues identified in the review and commit them -- amend the reviewed commit if it has not been pushed, otherwise create a new commit. Do NOT re-run the codex review yourself -- the post-commit hook will trigger it automatically when you commit. Do NOT stop until the review passes."}'
     ;;
   RUNNING)
     # Review mid-flight: nothing to block on. But a RUNNING marker that has

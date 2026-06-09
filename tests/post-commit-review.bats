@@ -190,6 +190,21 @@ teardown() { teardown_repo; }
   [ "$key" = "null deref — src/a.c" ]
 }
 
+@test "unpushed FAIL advises amending the reviewed commit" {
+  out=$(hook_input "git commit -m initial" "" | CODEX_STUB_MODE=fail run_post_hook)
+  [[ $(echo "$out" | jq -r '.reason') == *"git commit --amend"* ]]
+}
+
+@test "FAIL on a commit already on a remote advises a new commit" {
+  git init -q --bare "$TESTDIR/remote.git"
+  git -C "$REPO" remote add origin "$TESTDIR/remote.git"
+  git -C "$REPO" push -q origin HEAD
+  out=$(hook_input "git commit -m initial && git push" "" | CODEX_STUB_MODE=fail run_post_hook)
+  reason=$(echo "$out" | jq -r '.reason')
+  [[ "$reason" == *"create a new commit"* ]]
+  [[ "$reason" != *"git commit --amend"* ]]
+}
+
 @test "PASS clears state and loop counter" {
   echo "FAIL deadbeef 123" > "$(state_file)"
   echo "3" > "$(counter_file)"

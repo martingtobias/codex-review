@@ -475,11 +475,21 @@ elif [ "$HAS_ISSUES" = "true" ]; then
   if [ "${WAIVED_BLOCKING:-0}" -gt 0 ]; then
     WAIVE_NOTE=" ($WAIVED_BLOCKING additional waived finding(s) suppressed; see $WAIVE_FILE)"
   fi
+  # Prefer folding fixes into the reviewed commit so the broken version
+  # never survives in history -- but only while the commit is unpushed.
+  # (A `git commit && git push` one-liner lands here with the commit
+  # already on the remote; amending would diverge.)
+  if [ -z "$(git -C "$REPO_ROOT" branch -r --contains "$HEAD_SHA" 2>/dev/null)" ]; then
+    FIX_INSTRUCTION="Fix the issues identified above, then fold the fixes into the reviewed commit with git commit --amend (it has not been pushed, so amending is safe, and it keeps the broken version out of history)."
+  else
+    FIX_INSTRUCTION="Fix the issues identified above, then create a new commit (the reviewed commit is already on a remote -- do NOT amend it)."
+  fi
   jq -n \
     --arg sha "$SHORT_SHA" \
     --arg review "$REVIEW_SUMMARY" \
     --arg waive_note "$WAIVE_NOTE" \
-    '{"decision": "block", "reason": ("Codex review of commit " + $sha + " found issues:" + $waive_note + "\n\n" + $review + "\n\nFix the issues identified above, then create a new commit. Do NOT re-run the codex review yourself -- this hook will trigger it automatically on your next commit. Do NOT push to GitHub until the review passes. If the user disagrees with a finding, they can suppress it with /codex-review-waive.")}'
+    --arg fix "$FIX_INSTRUCTION" \
+    '{"decision": "block", "reason": ("Codex review of commit " + $sha + " found issues:" + $waive_note + "\n\n" + $review + "\n\n" + $fix + " Do NOT re-run the codex review yourself -- this hook will trigger it automatically on your next commit. Do NOT push to GitHub until the review passes. If the user disagrees with a finding, they can suppress it with /codex-review-waive.")}'
 else
   rm -f "$STATE_FILE" "$LOOP_COUNTER"
   append_history "PASS"

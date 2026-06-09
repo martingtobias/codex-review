@@ -24,8 +24,5 @@ jobs:
       - name: Shellcheck hook scripts
         run: shellcheck plugins/codex-review/hooks/scripts/*.sh
 
-      - name: Install bats
-        run: npm install -g bats
-
       - name: Run hook tests
-        run: bats tests
+        run: npx --yes bats tests

@@ -163,11 +163,11 @@ if [ -z "$HEAD_SHA" ]; then
 fi
 SHORT_SHA=$(printf '%s' "$HEAD_SHA" | cut -c1-8)
 
-STATE_FILE="$REPO_ROOT/.codex-review-state"
-LOOP_COUNTER="$REPO_ROOT/.codex-review-loop-count"
-
-# Resolve the history log location via Git so linked worktrees and submodules
-# (where $REPO_ROOT/.git is a file, not a directory) work correctly.
+# Resolve the state/history location via Git so linked worktrees and
+# submodules (where $REPO_ROOT/.git is a file, not a directory) work
+# correctly. State lives inside the git dir -- never in the working tree --
+# so the fix loop can't stage it with `git add -A` and no per-project
+# .gitignore edit is needed.
 GITDIR=$(cd "$REPO_ROOT" && git rev-parse --git-common-dir 2>/dev/null || true)
 if [ -z "$GITDIR" ]; then
   GITDIR="$REPO_ROOT/.git"
@@ -175,7 +175,14 @@ elif [ "${GITDIR#/}" = "$GITDIR" ]; then
   # Relative path -- anchor it to the repo root.
   GITDIR="$REPO_ROOT/$GITDIR"
 fi
+
+STATE_FILE="$GITDIR/codex-review-state"
+LOOP_COUNTER="$GITDIR/codex-review-loop-count"
 HISTORY_FILE="$GITDIR/codex-reviews.jsonl"
+
+# One-time migration: pre-1.4.0 releases kept state markers in the working
+# tree, where the fix loop could accidentally commit them.
+rm -f "$REPO_ROOT/.codex-review-state" "$REPO_ROOT/.codex-review-loop-count" 2>/dev/null || true
 
 # Defaults so the EXIT trap (timeout path) has valid values to log with.
 START_TS=$(date +%s)
@@ -223,14 +230,16 @@ append_history() {
 # Mark in-flight so a kill (timeout) is distinguishable from a real FAIL/PASS.
 # On abnormal exit, downgrade state to TIMEOUT and log the event so the
 # history file faithfully records every outcome advertised in the README.
-echo "RUNNING $SHORT_SHA" > "$STATE_FILE"
+# State format: "<VERDICT> <full-sha> <epoch>" -- the Stop hook uses the sha
+# and timestamp to detect and clear stale state.
+echo "RUNNING $HEAD_SHA $START_TS" > "$STATE_FILE"
 trap '
   rc=$?
   if [ "$rc" -ne 0 ] && [ -f "$STATE_FILE" ]; then
     s=$(cat "$STATE_FILE" 2>/dev/null || true)
     case "$s" in
       RUNNING*)
-        echo "TIMEOUT" > "$STATE_FILE"
+        echo "TIMEOUT $HEAD_SHA $(date +%s)" > "$STATE_FILE"
         append_history "TIMEOUT" 2>/dev/null || true
         ;;
     esac
@@ -337,7 +346,7 @@ fi
 
 # --- Emit verdict ---
 if [ "$REVIEW_EXIT" -ne 0 ]; then
-  echo "ERROR" > "$STATE_FILE"
+  echo "ERROR $HEAD_SHA $(date +%s)" > "$STATE_FILE"
   append_history "ERROR"
   jq -n \
     --arg sha "$SHORT_SHA" \
@@ -345,7 +354,7 @@ if [ "$REVIEW_EXIT" -ne 0 ]; then
     --arg exit_code "$REVIEW_EXIT" \
     '{"decision": "block", "reason": ("Codex review of commit " + $sha + " errored (exit code: " + $exit_code + ").\n\n" + $review + "\n\nReview the output above and decide whether to push or fix issues.")}'
 elif [ "$HAS_ISSUES" = "true" ]; then
-  echo "FAIL" > "$STATE_FILE"
+  echo "FAIL $HEAD_SHA $(date +%s)" > "$STATE_FILE"
   append_history "FAIL"
   jq -n \
     --arg sha "$SHORT_SHA" \

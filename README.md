@@ -5,6 +5,8 @@
 
 A Claude Code plugin that runs an automatic code review with OpenAI Codex CLI after every `git commit` made via the Bash tool. On `[P1]`/`[P2]` findings, Claude is blocked and asked to fix and re-commit; on a clean review, you're prompted to push.
 
+> This is an independent community project, not affiliated with or endorsed by OpenAI or Anthropic. "Codex" is a product of OpenAI; this plugin drives the Codex CLI you install and authenticate yourself.
+
 ## Prerequisites
 
 - **OpenAI Codex CLI on `$PATH`** — install via `npm install -g @openai/codex` (see https://github.com/openai/codex). Verify with `command -v codex`.

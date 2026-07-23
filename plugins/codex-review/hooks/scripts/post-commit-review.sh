@@ -19,6 +19,16 @@ esac
 case "$CODEX_REVIEW_TIMEOUT" in
   ''|*[!0-9]*) CODEX_REVIEW_TIMEOUT=600 ;;
 esac
+# Cap on consecutive FAIL review rounds since the last PASS (each fix+commit/
+# amend is one round). At the cap the review STOPS BLOCKING: findings become
+# advisory context, state clears, and work can proceed/push. Distinct from
+# CODEX_REVIEW_MAX_LOOPS (the Stop-hook safety valve), which only counts when
+# Claude tries to END ITS TURN on a FAIL — same-turn fix-and-amend cycles never
+# increment it, so long review sagas were effectively unbounded.
+: "${CODEX_REVIEW_MAX_ROUNDS:=8}"
+case "$CODEX_REVIEW_MAX_ROUNDS" in
+  ''|*[!0-9]*) CODEX_REVIEW_MAX_ROUNDS=8 ;;
+esac
 # Clamp user values below the harness ceiling, keeping headroom to parse
 # output and write the verdict/history before the harness kills the hook.
 # The ceiling mirrors hooks.json; the env override exists for tests.
@@ -214,6 +224,7 @@ fi
 
 STATE_FILE="$GITDIR/codex-review-state"
 LOOP_COUNTER="$GITDIR/codex-review-loop-count"
+ROUND_COUNTER="$GITDIR/codex-review-round-count"
 HISTORY_FILE="$GITDIR/codex-reviews.jsonl"
 
 # File-based kill switch (works mid-session, unlike the env var, which hooks
@@ -485,29 +496,56 @@ elif [ "$REVIEW_EXIT" -ne 0 ]; then
     --arg exit_code "$REVIEW_EXIT" \
     '{"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": ("Codex review of commit " + $sha + " errored (exit code: " + $exit_code + ") and produced no verdict. You are not blocked.\n\n" + $review + "\n\nMention the error to the user -- likely a Codex auth or rate-limit issue.")}}'
 elif [ "$HAS_ISSUES" = "true" ]; then
-  echo "FAIL $HEAD_SHA $(date +%s)" > "$STATE_FILE"
-  append_history "FAIL"
-  WAIVE_NOTE=""
-  if [ "${WAIVED_BLOCKING:-0}" -gt 0 ]; then
-    WAIVE_NOTE=" ($WAIVED_BLOCKING additional waived finding(s) suppressed; see $WAIVE_FILE)"
+  # Round cap: count consecutive FAIL verdicts since the last PASS (the
+  # counter survives amends -- each amend is a new sha but the same saga).
+  # At the cap, stop blocking: findings demote to advisory context, state
+  # clears so the Stop hook releases too, and the counter resets for the
+  # next saga.
+  ROUNDS=0
+  if [ -f "$ROUND_COUNTER" ]; then
+    raw_rounds=$(cat "$ROUND_COUNTER" 2>/dev/null || echo 0)
+    case "$raw_rounds" in
+      ''|*[!0-9]*) ROUNDS=0 ;;
+      *)           ROUNDS=$raw_rounds ;;
+    esac
   fi
-  # Prefer folding fixes into the reviewed commit so the broken version
-  # never survives in history -- but only while the commit is unpushed.
-  # (A `git commit && git push` one-liner lands here with the commit
-  # already on the remote; amending would diverge.)
-  if [ -z "$(git -C "$REPO_ROOT" branch -r --contains "$HEAD_SHA" 2>/dev/null)" ]; then
-    FIX_INSTRUCTION="Fix the issues identified above, then fold the fixes into the reviewed commit with git commit --amend (it has not been pushed, so amending is safe, and it keeps the broken version out of history)."
+  ROUNDS=$((ROUNDS + 1))
+  if [ "$ROUNDS" -ge "$CODEX_REVIEW_MAX_ROUNDS" ]; then
+    rm -f "$STATE_FILE" "$LOOP_COUNTER" "$ROUND_COUNTER"
+    append_history "FAIL"
+    jq -n \
+      --arg sha "$SHORT_SHA" \
+      --arg review "$REVIEW_SUMMARY" \
+      --arg max "$CODEX_REVIEW_MAX_ROUNDS" \
+      '{"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": ("Codex review of commit " + $sha + " still has findings, but this is review round " + $max + " of a max of " + $max + " since the last pass -- the review loop is CAPPED and no longer blocking. Treat the findings below as ADVISORY: fix any you judge real (no re-review will fire until the next natural commit), note the rest to the user, and proceed -- you may push.\n\n" + $review)}}'
   else
-    FIX_INSTRUCTION="Fix the issues identified above, then create a new commit (the reviewed commit is already on a remote -- do NOT amend it)."
+    echo "$ROUNDS" > "$ROUND_COUNTER"
+    echo "FAIL $HEAD_SHA $(date +%s)" > "$STATE_FILE"
+    append_history "FAIL"
+    WAIVE_NOTE=""
+    if [ "${WAIVED_BLOCKING:-0}" -gt 0 ]; then
+      WAIVE_NOTE=" ($WAIVED_BLOCKING additional waived finding(s) suppressed; see $WAIVE_FILE)"
+    fi
+    # Prefer folding fixes into the reviewed commit so the broken version
+    # never survives in history -- but only while the commit is unpushed.
+    # (A `git commit && git push` one-liner lands here with the commit
+    # already on the remote; amending would diverge.)
+    if [ -z "$(git -C "$REPO_ROOT" branch -r --contains "$HEAD_SHA" 2>/dev/null)" ]; then
+      FIX_INSTRUCTION="Fix the issues identified above, then fold the fixes into the reviewed commit with git commit --amend (it has not been pushed, so amending is safe, and it keeps the broken version out of history)."
+    else
+      FIX_INSTRUCTION="Fix the issues identified above, then create a new commit (the reviewed commit is already on a remote -- do NOT amend it)."
+    fi
+    jq -n \
+      --arg sha "$SHORT_SHA" \
+      --arg review "$REVIEW_SUMMARY" \
+      --arg waive_note "$WAIVE_NOTE" \
+      --arg fix "$FIX_INSTRUCTION" \
+      --arg round "$ROUNDS" \
+      --arg max "$CODEX_REVIEW_MAX_ROUNDS" \
+      '{"decision": "block", "reason": ("Codex review of commit " + $sha + " found issues (fix round " + $round + " of max " + $max + "):" + $waive_note + "\n\n" + $review + "\n\n" + $fix + " Do NOT re-run the codex review yourself -- this hook will trigger it automatically on your next commit. Do NOT push to GitHub until the review passes. If the user disagrees with a finding, they can suppress it with /codex-review-waive.")}'
   fi
-  jq -n \
-    --arg sha "$SHORT_SHA" \
-    --arg review "$REVIEW_SUMMARY" \
-    --arg waive_note "$WAIVE_NOTE" \
-    --arg fix "$FIX_INSTRUCTION" \
-    '{"decision": "block", "reason": ("Codex review of commit " + $sha + " found issues:" + $waive_note + "\n\n" + $review + "\n\n" + $fix + " Do NOT re-run the codex review yourself -- this hook will trigger it automatically on your next commit. Do NOT push to GitHub until the review passes. If the user disagrees with a finding, they can suppress it with /codex-review-waive.")}'
 else
-  rm -f "$STATE_FILE" "$LOOP_COUNTER"
+  rm -f "$STATE_FILE" "$LOOP_COUNTER" "$ROUND_COUNTER"
   append_history "PASS"
   PASS_NOTE="no issues found"
   if [ "${WAIVED_BLOCKING:-0}" -gt 0 ]; then

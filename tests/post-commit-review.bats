@@ -22,6 +22,40 @@ teardown() { teardown_repo; }
   [[ "$epoch" =~ ^[0-9]+$ ]]
 }
 
+@test "FAIL below the round cap blocks and records the round" {
+  out=$(hook_input "git commit -m initial" "" | CODEX_STUB_MODE=fail run_post_hook)
+  [ "$(echo "$out" | jq -r '.decision')" = "block" ]
+  [[ $(echo "$out" | jq -r '.reason') == *"fix round 1 of max 8"* ]]
+  [ "$(cat "$(round_counter_file)")" = "1" ]
+}
+
+@test "round cap demotes findings to advisory and clears state" {
+  echo "7" > "$(round_counter_file)"
+  out=$(hook_input "git commit -m initial" "" \
+    | CODEX_STUB_MODE=fail CODEX_REVIEW_MAX_ROUNDS=8 run_post_hook)
+  [ "$(echo "$out" | jq -r '.decision // empty')" = "" ]
+  ctx=$(echo "$out" | jq -r '.hookSpecificOutput.additionalContext')
+  [[ "$ctx" == *"CAPPED"* ]]
+  [[ "$ctx" == *"ADVISORY"* ]]
+  [ ! -f "$(state_file)" ]
+  [ ! -f "$(round_counter_file)" ]
+  [ "$(jq -r '.verdict' "$(history_file)")" = "FAIL" ]
+}
+
+@test "garbage CODEX_REVIEW_MAX_ROUNDS falls back to the default" {
+  echo "7" > "$(round_counter_file)"
+  out=$(hook_input "git commit -m initial" "" \
+    | CODEX_STUB_MODE=fail CODEX_REVIEW_MAX_ROUNDS=abc run_post_hook)
+  [ "$(echo "$out" | jq -r '.decision // empty')" = "" ]
+  [[ $(echo "$out" | jq -r '.hookSpecificOutput.additionalContext') == *"max of 8"* ]]
+}
+
+@test "PASS clears the round counter" {
+  echo "3" > "$(round_counter_file)"
+  hook_input "git commit -m initial" "" | run_post_hook > /dev/null
+  [ ! -f "$(round_counter_file)" ]
+}
+
 @test "findings exclude rubric legend lines; counts agree with verdict" {
   hook_input "git commit -m initial" "" | CODEX_STUB_MODE=fail run_post_hook > /dev/null
   line=$(tail -1 "$(history_file)")

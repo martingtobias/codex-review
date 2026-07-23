@@ -96,3 +96,7 @@ state_file() {
 counter_file() {
   echo "$REPO/.git/codex-review-loop-count"
 }
+
+round_counter_file() {
+  echo "$REPO/.git/codex-review-round-count"
+}

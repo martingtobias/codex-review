@@ -32,6 +32,7 @@ CWD=$(printf '%s' "$INPUT" | jq -r '.cwd // empty')
 if [ -z "$CWD" ]; then
   CWD="${CLAUDE_PROJECT_DIR:-$PWD}"
 fi
+SESSION_ID=$(printf '%s' "$INPUT" | jq -r '.session_id // empty')
 
 REPO_ROOT=""
 if [ -d "$CWD" ]; then
@@ -64,10 +65,12 @@ if [ ! -f "$STATE_FILE" ]; then
   echo '{}'; exit 0
 fi
 
-# State format: "<VERDICT> <full-sha> <epoch>". Pre-1.4.0 wrote fewer fields;
-# missing sha/epoch reads as stale below, which is the safe interpretation.
+# State format: "<VERDICT> <full-sha> <epoch> <session-id>". Pre-1.4.0 wrote
+# fewer fields; missing sha/epoch reads as stale below, which is the safe
+# interpretation. A missing session-id (older state, or a commit made outside
+# a Claude session) disables the ownership check and preserves prior behaviour.
 STATE=$(head -c 256 "$STATE_FILE" 2>/dev/null || true)
-read -r VERDICT STATE_SHA STATE_TS _ <<<"$STATE " || true
+read -r VERDICT STATE_SHA STATE_TS STATE_SESSION _ <<<"$STATE " || true
 case "${STATE_TS:-}" in
   ''|*[!0-9]*) STATE_TS=0 ;;
 esac
@@ -84,6 +87,17 @@ case "${VERDICT:-}" in
        || [ "$HEAD_SHA" != "$STATE_SHA" ] \
        || [ $((NOW - STATE_TS)) -gt "$FAIL_MAX_AGE" ]; then
       rm -f "$STATE_FILE" "$LOOP_COUNTER"
+      echo '{}'; exit 0
+    fi
+
+    # Ownership: the fix loop belongs to the session that made the reviewed
+    # commit. Another session sharing this repo must not be told to amend it --
+    # it would clobber live, uncommitted work by the session that owns it.
+    # Stay completely inert: no block, and do NOT touch the state file or the
+    # loop counter, which the owning session is still using. (Staleness is
+    # checked above first, so an abandoned session's state still self-clears.)
+    if [ -n "${STATE_SESSION:-}" ] && [ -n "${SESSION_ID:-}" ] \
+       && [ "$STATE_SESSION" != "$SESSION_ID" ]; then
       echo '{}'; exit 0
     fi
 

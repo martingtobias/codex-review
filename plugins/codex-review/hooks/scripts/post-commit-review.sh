@@ -85,6 +85,10 @@ if [ -z "$CODEX_BIN" ] || [ ! -x "$CODEX_BIN" ]; then
 fi
 
 # --- Resolve repo root via git (no heuristics over command text) ---
+# Session that made this commit. Recorded in the FAIL state so the Stop hook
+# holds only THIS session in the fix loop -- a second session sharing the repo
+# must never be told to amend a commit it did not make.
+SESSION_ID=$(printf '%s' "$INPUT" | jq -r '.session_id // empty')
 SESSION_CWD=$(printf '%s' "$INPUT" | jq -r '.cwd // empty')
 if [ -z "$SESSION_CWD" ]; then
   SESSION_CWD="${CLAUDE_PROJECT_DIR:-$PWD}"
@@ -485,7 +489,7 @@ elif [ "$REVIEW_EXIT" -ne 0 ]; then
     --arg exit_code "$REVIEW_EXIT" \
     '{"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": ("Codex review of commit " + $sha + " errored (exit code: " + $exit_code + ") and produced no verdict. You are not blocked.\n\n" + $review + "\n\nMention the error to the user -- likely a Codex auth or rate-limit issue.")}}'
 elif [ "$HAS_ISSUES" = "true" ]; then
-  echo "FAIL $HEAD_SHA $(date +%s)" > "$STATE_FILE"
+  echo "FAIL $HEAD_SHA $(date +%s) ${SESSION_ID:-}" > "$STATE_FILE"
   append_history "FAIL"
   WAIVE_NOTE=""
   if [ "${WAIVED_BLOCKING:-0}" -gt 0 ]; then

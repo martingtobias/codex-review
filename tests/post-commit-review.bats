@@ -56,6 +56,19 @@ teardown() { teardown_repo; }
   [ ! -f "$(round_counter_file)" ]
 }
 
+@test "FAIL state records the session that made the commit" {
+  hook_input "git commit -m initial" "" "$REPO" sess-abc | CODEX_STUB_MODE=fail run_post_hook > /dev/null
+  read -r _ _ _ session < "$(state_file)"
+  [ "$session" = "sess-abc" ]
+}
+
+@test "FAIL state omits the session field when the harness supplies none" {
+  hook_input "git commit -m initial" "" | CODEX_STUB_MODE=fail run_post_hook > /dev/null
+  read -r verdict sha epoch session < "$(state_file)"
+  [ "$verdict" = "FAIL" ]
+  [ -z "$session" ]
+}
+
 @test "findings exclude rubric legend lines; counts agree with verdict" {
   hook_input "git commit -m initial" "" | CODEX_STUB_MODE=fail run_post_hook > /dev/null
   line=$(tail -1 "$(history_file)")

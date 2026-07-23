@@ -50,6 +50,41 @@ fresh_fail_state() {
   [ ! -f "$(state_file)" ]
 }
 
+@test "FAIL owned by another session: no block, owner's state and counter untouched" {
+  echo "FAIL $(git -C "$REPO" rev-parse HEAD) $(date +%s) sess-owner" > "$(state_file)"
+  echo "3" > "$(counter_file)"
+  out=$(stop_input "$REPO" false sess-other | run_stop_hook)
+  [ "$out" = "{}" ]
+  [ -f "$(state_file)" ]
+  [ "$(cat "$(counter_file)")" = "3" ]
+}
+
+@test "FAIL owned by this session still blocks and increments" {
+  echo "FAIL $(git -C "$REPO" rev-parse HEAD) $(date +%s) sess-owner" > "$(state_file)"
+  out=$(stop_input "$REPO" false sess-owner | run_stop_hook)
+  [ "$(echo "$out" | jq -r '.decision')" = "block" ]
+  [ "$(cat "$(counter_file)")" = "1" ]
+}
+
+@test "session-stamped FAIL blocks a session that reports no id" {
+  echo "FAIL $(git -C "$REPO" rev-parse HEAD) $(date +%s) sess-owner" > "$(state_file)"
+  out=$(stop_input | run_stop_hook)
+  [ "$(echo "$out" | jq -r '.decision')" = "block" ]
+}
+
+@test "unstamped FAIL blocks any session (pre-upgrade state)" {
+  fresh_fail_state
+  out=$(stop_input "$REPO" false sess-other | run_stop_hook)
+  [ "$(echo "$out" | jq -r '.decision')" = "block" ]
+}
+
+@test "stale FAIL owned by another session is still cleared" {
+  echo "FAIL $(git -C "$REPO" rev-parse HEAD) $(( $(date +%s) - 4000 )) sess-owner" > "$(state_file)"
+  out=$(stop_input "$REPO" false sess-other | run_stop_hook)
+  [ "$out" = "{}" ]
+  [ ! -f "$(state_file)" ]
+}
+
 @test "pre-1.4.0 bare FAIL state is treated as stale" {
   echo "FAIL" > "$(state_file)"
   out=$(stop_input | run_stop_hook)

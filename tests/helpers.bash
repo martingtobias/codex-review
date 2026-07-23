@@ -69,16 +69,20 @@ STUB
   chmod +x "$STUB_DIR/codex"
 }
 
-# hook_input <command> [stdout] [cwd]
+# hook_input <command> [stdout] [cwd] [session_id]
+# An empty session_id omits the key entirely, mirroring a harness that does not
+# supply one.
 hook_input() {
-  jq -nc --arg cwd "${3:-$REPO}" --arg cmd "$1" --arg out "${2:-}" \
-    '{cwd:$cwd, tool_input:{command:$cmd}, tool_response:{stdout:$out}}'
+  jq -nc --arg cwd "${3:-$REPO}" --arg cmd "$1" --arg out "${2:-}" --arg sid "${4:-}" \
+    '{cwd:$cwd, tool_input:{command:$cmd}, tool_response:{stdout:$out}}
+     + (if $sid == "" then {} else {session_id:$sid} end)'
 }
 
-# stop_input [cwd] [stop_hook_active]
+# stop_input [cwd] [stop_hook_active] [session_id]
 stop_input() {
-  jq -nc --arg cwd "${1:-$REPO}" --argjson active "${2:-false}" \
-    '{cwd:$cwd, stop_hook_active:$active}'
+  jq -nc --arg cwd "${1:-$REPO}" --argjson active "${2:-false}" --arg sid "${3:-}" \
+    '{cwd:$cwd, stop_hook_active:$active}
+     + (if $sid == "" then {} else {session_id:$sid} end)'
 }
 
 run_post_hook() {

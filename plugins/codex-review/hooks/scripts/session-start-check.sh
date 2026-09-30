@@ -48,5 +48,18 @@ if ! "$CODEX_BIN" login status >/dev/null 2>&1; then
   emit "codex-review plugin: codex CLI found but 'codex login status' did not succeed -- reviews will likely error until you run 'codex login' or export OPENAI_API_KEY. (Ignore if your codex version predates 'login status'.)"
 fi
 
+SANDBOX_STATE_FILE="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/codex-review/sandbox-mode"
+SANDBOX_MODE=""
+if [ -f "$SANDBOX_STATE_FILE" ]; then
+  SANDBOX_MODE=$(cat "$SANDBOX_STATE_FILE" 2>/dev/null || true)
+else
+  SANDBOX_MODE="${CLAUDE_PLUGIN_OPTION_SANDBOX_MODE:-}"
+fi
+case "$SANDBOX_MODE" in
+  danger-full-access|bypass)
+    emit "codex-review plugin: sandbox_mode=$SANDBOX_MODE -- automatic reviews run with elevated access."
+    ;;
+esac
+
 # Healthy: stay silent -- no per-session noise.
 echo '{}'

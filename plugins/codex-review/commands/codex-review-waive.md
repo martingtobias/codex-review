@@ -20,14 +20,27 @@ appear in the review history, marked `"waived": true`.
    ```
    History: `$GITDIR/codex-reviews.jsonl`. Waive file: `$GITDIR/codex-review-waived`.
 
-2. Read the most recent FAIL entry:
+2. Read the most recent FAIL entry **for the current commit**. History is
+   repo-wide and another session may have failed more recently, so resolve
+   your own failure via your worktree's HEAD — never take the latest FAIL
+   alone:
    ```bash
-   jq -s '[.[] | select(.verdict=="FAIL")] | last' "$GITDIR/codex-reviews.jsonl"
+   WAIVED_SHA=$(git rev-parse HEAD)
+   jq -s --arg sha "$WAIVED_SHA" \
+     '[.[] | select(.verdict=="FAIL" and .sha==$sha)] | last' \
+     "$GITDIR/codex-reviews.jsonl"
    ```
    If there is none (or the file is missing), tell the user there is no
-   failed review to waive findings from, and stop.
+   failed review of the current commit (`HEAD`) to waive findings from,
+   and stop.
 
-3. List its blocking findings (priority `P1`/`P2` with `waived` false),
+3. Determine which priorities blocked **that** review. Prefer the entry's own
+   `blocking_priorities` array — it records the set in force when the review
+   ran, which is what the user is actually blocked by. Fall back to
+   `CODEX_REVIEW_BLOCK_PRIORITIES` (space-separated) if the field is absent
+   (entries written before 1.7.1), and to `P1 P2` if that is unset too.
+
+   List its blocking findings (priority in that set, with `waived` false),
    numbered, showing priority and title. Select per `$ARGUMENTS`:
    - a number → that finding
    - `all` → every blocking finding
@@ -41,9 +54,20 @@ appear in the review history, marked `"waived": true`.
    always copy the `waive_key` value from the history entry, since the hook
    computes it with a specific normalization.
 
-5. If every blocking finding in that entry is now waived, release the block:
+5. Release the block only if every finding at a blocking priority (the set from
+   step 3 — so a `P0` must be waived explicitly, never left dangling) in that
+   entry is now waived — and only for the review you just waived. State files are per-session
+   (`.<session-id>` suffixes) and other sessions may have unrelated failing
+   reviews that must stay blocked, so remove only state whose recorded sha
+   matches `$WAIVED_SHA` from step 2, plus its loop counter:
    ```bash
-   rm -f "$GITDIR/codex-review-state" "$GITDIR/codex-review-loop-count"
+   for f in "$GITDIR"/codex-review-state*; do
+     [ -f "$f" ] || continue
+     read -r _ state_sha _ _ < "$f"
+     if [ "$state_sha" = "$WAIVED_SHA" ]; then
+       rm -f "$f" "$GITDIR/codex-review-loop-count${f#"$GITDIR"/codex-review-state}"
+     fi
+   done
    ```
 
 6. Confirm to the user: which finding(s) were waived, that future reviews

@@ -10,7 +10,7 @@
       "name": "codex-review",
       "source": "./plugins/codex-review",
       "description": "Automatic post-commit code review using OpenAI Codex CLI.",
-      "version": "1.5.1"
+      "version": "1.8.1"
     }
   ]
 }

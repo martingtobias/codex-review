@@ -22,19 +22,19 @@ See the plugin README for installation. All invocations below use
 ### Review a specific commit
 
 ```bash
-"${CODEX_BIN:-codex}" exec review --commit <SHA> --full-auto
+"${CODEX_BIN:-codex}" exec --sandbox workspace-write review --commit <SHA>
 ```
 
 ### Review uncommitted changes (staged + unstaged + untracked)
 
 ```bash
-"${CODEX_BIN:-codex}" exec review --uncommitted --full-auto
+"${CODEX_BIN:-codex}" exec --sandbox workspace-write review --uncommitted
 ```
 
 ### Review branch diff against a base branch
 
 ```bash
-"${CODEX_BIN:-codex}" exec review --base <branch> --full-auto
+"${CODEX_BIN:-codex}" exec --sandbox workspace-write review --base <branch>
 ```
 
 **Note:** `--commit`, `--uncommitted`, and `--base` are mutually exclusive

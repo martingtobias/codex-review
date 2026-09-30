@@ -13,7 +13,7 @@ Read `${CLAUDE_PLUGIN_ROOT}/skills/codex-review/SKILL.md` (this plugin's
 and follow it, mapping `$ARGUMENTS` per its "Argument Mapping" section.
 
 Quick reference if the skill file is unavailable: run
-`"${CODEX_BIN:-codex}" exec review --full-auto` with exactly one of
+`"${CODEX_BIN:-codex}" exec --sandbox workspace-write review` with exactly one of
 `--commit <sha>` (default: HEAD), `--uncommitted`, or `--base <branch>`,
 then report [P1]/[P2] findings and offer to fix; on a clean review offer
 to push.
